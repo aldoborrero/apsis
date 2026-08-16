@@ -1,0 +1,13 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/apsis-engine",
+    "crates/apsis-common",
+    "crates/apsis-coordinator",
+    "crates/apsis-worker",
+]
+
+[workspace.package]
+edition = "2021"
+license = "MIT"
+repository = "https://github.com/aldoborrero/pyflows"

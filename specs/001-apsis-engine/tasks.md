@@ -13,15 +13,16 @@
 
 ## Phase 1: Setup (shared infrastructure)
 
-- [ ] T001 Scaffold the Cargo **workspace** (root `Cargo.toml [workspace]`) with all four
+- [X] T001 Scaffold the Cargo **workspace** (root `Cargo.toml [workspace]`) with all four
   members (foundation-first): `crates/apsis-engine` **plus** compiling **stubs**
   `crates/apsis-common` (lib), `crates/apsis-coordinator` (bin), `crates/apsis-worker`
   (bin) — minimal `lib.rs`/`main.rs` that build and do nothing. Only `apsis-engine` is
   implemented in this spec; the stubs make the whole shape exist so later crates slot in.
-- [ ] T001b Configure `crates/apsis-engine/Cargo.toml`: edition 2021, deps `serde` +
+- [X] T001b Configure `crates/apsis-engine/Cargo.toml`: edition 2021, deps `serde` +
   `serde_json` + `garde` + `thiserror`, optional `probe-exec` feature. **No** async/queue/
   watch deps (FR-008).
-- [ ] T002 [P] Configure workspace-wide `rustfmt.toml` + clippy (`-D warnings`).
+- [X] T002 [P] Configure workspace-wide `rustfmt.toml` + clippy (`-D warnings`).
+  *(rustfmt.toml added, `cargo fmt --check` passes; clippy component wired via nix devshell.)*
 - [ ] T003 [P] Create `crates/apsis-engine/tests/fixtures/` and export the oracle cases
   from the Python `_engine` (branch `feat/unmanic-integration`): per case
   `{probe.json, plan.json, cmd-vaapi.txt, cmd-cpu.txt}` (input + expected outputs).

@@ -1,0 +1,17 @@
+[package]
+name = "apsis-engine"
+version = "0.0.0"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "apsis transcode planner and ffmpeg command builder (port of pyflows _engine)"
+
+[features]
+# Optional helper that shells out to ffprobe; the core is pure (parses JSON).
+probe-exec = []
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+# garde (profile validation) is added in the Foundational phase with config.rs.
