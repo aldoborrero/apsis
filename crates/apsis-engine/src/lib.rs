@@ -6,12 +6,13 @@
 //!
 //! See `specs/001-apsis-engine/` for the spec, plan, and data model.
 //!
-//! **Status:** planning ([`plan`]), probe parsing, and audio/subtitle selection
-//! are ported and covered by unit tests. Command building (the `Backend` trait)
-//! is the next phase (US2). A JSON-fixture oracle harness (exporting from the
-//! Python engine) is the remaining parity task (T009).
+//! **Status:** planning ([`plan`]), probe parsing, audio/subtitle selection, and
+//! command building (the [`Backend`] trait + [`FfmpegCommand`]) are ported and
+//! covered by unit + golden tests (US1 + US2). A JSON-fixture oracle harness
+//! (exporting from the Python engine) is the remaining parity task (T009).
 
 pub mod audio;
+pub mod command;
 pub mod config;
 mod constants;
 pub mod error;
@@ -21,6 +22,7 @@ pub mod probe;
 pub mod subtitles;
 
 pub use audio::{AudioAction, AudioActionKind, build_audio_plan};
+pub use command::{Backend, BuildOptions, CpuBackend, VaapiBackend, build_command};
 pub use config::{
     AudioConfig, Encoder, Fallback, HardwareConfig, HdrPolicy, OutputConfig, Profile, StereoConfig,
     SubtitleConfig, VaapiConfig, VideoCodec, VideoConfig,

@@ -89,22 +89,27 @@ Shared types + probe parsing. **Blocks all user stories.**
 
 ### Tests
 
-- [ ] T014 [P] [US2] Golden-command harness `tests/golden_cmd.rs`: assert
-  `backend.build(&plan, in, out).to_args()` equals `cmd-vaapi.txt` / `cmd-cpu.txt` per case.
+- [X] T014 [P] [US2] Golden-command parity: assert `backend.build(&plan, &profile).build()`
+  equals the exact ffmpeg arg vector per backend.
+  *(Done as in-crate golden tests in `src/command.rs` (VAAPI video-only, VAAPI + audio
+  copy/retitle/disposition, CPU video-only), plus the `FfmpegCommand` builder goldens in
+  `src/ffmpeg.rs`. The `cmd-*.txt` fixture export rides along with T009's JSON harness.)*
 
 ### Implementation
 
-- [ ] T015 [P] [US2] Define `Backend` trait + `BackendKind` in `src/backend/mod.rs`, and
-  `FfmpegCommandSpec` + deterministic `to_args()` in `src/command.rs`.
-- [ ] T016 [US2] Implement `VaapiBackend` in `src/backend/vaapi.rs`: `hevc_vaapi`/
-  `av1_vaapi`, emit `-sei hdr` for hevc/h264 when `sei_workaround` (a53_cc), HW-decode for
-  hevc/av1/vp9 vs SW-decode for h264, `format=nv12,hwupload`, `init_hw_device` (FR-004/005).
-- [ ] T017 [P] [US2] Implement `CpuBackend` in `src/backend/cpu.rs`: `libx265`/`libsvtav1`
-  at the plan's quality; `-c:v copy` for `VideoAction::Copy`.
-- [ ] T018 [US2] Implement command assembly in `src/command.rs`: map video (copy/encode
-  via backend), audio (copy or encode AAC stereo), subtitles (copy), per-stream metadata +
-  disposition, in a single stable-ordered arg vector.
-- [ ] T019 [US2] Run T014 green (SC-002: byte-exact per backend).
+- [X] T015 [P] [US2] `Backend` trait + `FfmpegCommand` builder with deterministic `build()`.
+  *(Trait in `src/command.rs`; the arg-vector builder is `FfmpegCommand` in `src/ffmpeg.rs`,
+  a faithful port of `ffmpeg.py`'s `FFmpegCommand.build`. Single-crate layout, no
+  `src/backend/` submodule — the two backends are thin wrappers over `build_command`.)*
+- [X] T016 [US2] Implement `VaapiBackend` in `src/command.rs`: `hevc_vaapi`/`av1_vaapi`,
+  emit `-sei hdr` for hevc (a53_cc workaround), HW-decode for hevc/av1/vp9 vs SW-decode +
+  `format=nv12,hwupload_vaapi` for h264, `init_hw_device` (FR-004/005).
+- [X] T017 [P] [US2] Implement `CpuBackend` in `src/command.rs`: `libx265`/`libsvtav1` at
+  the plan's quality (`crf` + `preset=medium`); `-c:v copy` for `VideoAction::Copy`.
+- [X] T018 [US2] Implement command assembly (`build_command`): map video (copy/encode via
+  backend), audio (copy or encode AAC stereo with per-source-index mapping), subtitles
+  (copy), per-stream metadata + disposition, in a single stable-ordered arg vector.
+- [X] T019 [US2] Golden tests green (SC-002: exact arg vector per backend).
 
 **Checkpoint**: US1 + US2 — plan and exact command both correct.
 
