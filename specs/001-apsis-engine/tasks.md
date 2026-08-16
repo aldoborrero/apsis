@@ -33,19 +33,20 @@
 
 Shared types + probe parsing. **Blocks all user stories.**
 
-- [ ] T004 [P] Define stream/probe types in `src/probe.rs`: `StreamInfo`, `StreamKind`,
+- [X] T004 [P] Define stream/probe types in `src/probe.rs`: `StreamInfo`, `StreamKind`,
   `Probe` (serde `Deserialize` from ffprobe JSON), with HDR detection from colour metadata.
-- [ ] T005 [P] Define config types in `src/config.rs`: `Profile` + `VideoConfig` /
+- [X] T005 [P] Define config types in `src/config.rs`: `Profile` + `VideoConfig` /
   `AudioConfig` / `StereoConfig` / `SubtitleConfig` / `OutputConfig` + enums
   (`VideoCodec`, `Encoder`, `Fallback`, `HdrPolicy`) with serde `Deserialize` + `garde`
   `Validate` (`quality ∈ 0..=51`).
-- [ ] T006 [P] Define plan output types in `src/plan.rs`: `FilePlan`, `VideoPlan` /
+  *(serde + a manual `Profile::validate` (quality range); `garde` derive deferred to Polish.)*
+- [X] T006 [P] Define plan output types in `src/plan.rs`: `FilePlan`, `VideoPlan` /
   `VideoAction`, `AudioTrackPlan` / `TrackAction`, `SubtitleTrackPlan` / `SubAction`,
   `PlanReason`.
-- [ ] T007 [P] Define `EngineError` in `src/error.rs` (`thiserror`); all fallible entry
+- [X] T007 [P] Define `EngineError` in `src/error.rs` (`thiserror`); all fallible entry
   points return `Result` (FR-010).
-- [ ] T008 Implement `parse_probe(json) -> Result<Probe, EngineError>` in `src/probe.rs`
-  (needs T004).
+- [X] T008 Implement `parse_probe(json) -> Result<Probe, EngineError>` in `src/probe.rs`
+  (needs T004). *(+ `probe_file` behind `probe-exec`; 2 unit tests pass.)*
 
 **Checkpoint**: types compile; a fixture `probe.json` round-trips into a `Probe`.
 
