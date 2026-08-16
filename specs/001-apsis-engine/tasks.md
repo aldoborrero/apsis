@@ -64,10 +64,10 @@ Shared types + probe parsing. **Blocks all user stories.**
 
 ### Implementation
 
-- [ ] T010 [P] [US1] Implement audio planning in `src/audio.rs`: `keep_languages` filter
+- [X] T010 [P] [US1] Implement audio planning in `src/audio.rs`: `keep_languages` filter
   with **never-drop-all** safety (FR-006), commentary removal, priority sort, AAC stereo
   downmix (per language, skip if stereo already present), `preserve_surround`.
-- [ ] T011 [P] [US1] Implement subtitle filtering in `src/subtitles.rs`: remove image
+- [X] T011 [P] [US1] Implement subtitle filtering in `src/subtitles.rs`: remove image
   formats (pgs/dvd_subtitle), keep languages, remove commentary.
 - [ ] T012 [US1] Implement `plan(probe, profile) -> FilePlan` in `src/plan.rs`: video
   action (`skip_codecs`, `hdr_policy = Copy` → Copy), assemble audio/subtitle plans,

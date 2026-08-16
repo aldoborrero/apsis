@@ -10,11 +10,15 @@
 //! override) is NOT ported yet — only the types exist. This crate is not
 //! oracle-faithful until spec 001 phase 3 (US1) lands `plan_from_probe`.
 
+pub mod audio;
 pub mod config;
+mod constants;
 pub mod error;
 pub mod plan;
 pub mod probe;
+pub mod subtitles;
 
+pub use audio::{AudioAction, AudioActionKind, build_audio_plan};
 pub use config::{
     AudioConfig, Encoder, Fallback, HdrPolicy, OutputConfig, Profile, StereoConfig, SubtitleConfig,
     VideoCodec, VideoConfig,
@@ -25,3 +29,4 @@ pub use plan::{
     SubtitleTrackPlan, TrackAction, VideoAction, VideoPlan,
 };
 pub use probe::{Probe, StreamInfo, parse_probe};
+pub use subtitles::filter_subtitles;
