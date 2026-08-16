@@ -20,4 +20,4 @@ pub use plan::{
     AudioTrackPlan, FilePlan, OutputPlan, PlanReason, PlanStatus, SubAction, SubtitleTrackPlan,
     TrackAction, VideoAction, VideoPlan,
 };
-pub use probe::{parse_probe, Probe, StreamInfo};
+pub use probe::{Probe, StreamInfo, parse_probe};
