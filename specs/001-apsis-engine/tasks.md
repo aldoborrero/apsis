@@ -138,14 +138,16 @@ Shared types + probe parsing. **Blocks all user stories.**
 
 ## Phase 6: Polish & cross-cutting
 
-- [ ] T022 [P] Edge-case tests in `tests/edge.rs`: no video stream → `Unsupported` + skip;
+- [X] T022 [P] Edge-case tests in `tests/edge.rs`: no video stream → `Unsupported` + skip;
   unreadable/corrupt input → `EngineError` (no panic); HDR `Copy`; `und`-language audio.
-- [ ] T023 [P] Optional `probe-exec` feature: `probe_file(path, ffprobe)` helper behind
-  `#[cfg(feature = "probe-exec")]`.
-- [ ] T024 [P] `cargo clippy -D warnings` + `cargo fmt`; verify `cargo build -p
-  apsis-engine` pulls **zero** orchestration deps (SC-004).
-- [ ] T025 [P] Doc comments on the public API (contracts/engine-api.md) + validate
-  quickstart.md snippets compile.
+- [X] T023 [P] Optional `probe-exec` feature: `probe_file(path, ffprobe)` helper behind
+  `#[cfg(feature = "probe-exec")]`, with a feature-gated test (missing ffprobe → `Err`, no
+  panic); `cargo test --features probe-exec` green.
+- [X] T024 [P] `cargo clippy -D warnings` (default + `probe-exec`) + `cargo fmt`; `cargo
+  tree -p apsis-engine` is **serde / serde_json / thiserror only** — zero orchestration
+  deps (SC-004 confirmed).
+- [X] T025 [P] Public-API example is a **compiling doctest** in `lib.rs` (parse → plan →
+  backend → argv); `quickstart.md` snippet updated to the real API.
 
 ---
 

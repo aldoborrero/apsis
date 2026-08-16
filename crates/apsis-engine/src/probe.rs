@@ -168,4 +168,15 @@ mod tests {
             "color_transfer":"smpte2084"}]}"#;
         assert!(parse_probe(json).unwrap().is_hdr());
     }
+
+    #[cfg(feature = "probe-exec")]
+    #[test]
+    fn probe_file_errors_on_missing_ffprobe() {
+        // Spawning a nonexistent binary yields an I/O error, not a panic (FR-010).
+        let result = probe_file(
+            std::path::Path::new("/nonexistent/input.mkv"),
+            std::path::Path::new("/nonexistent/ffprobe-binary"),
+        );
+        assert!(matches!(result, Err(EngineError::Ffprobe(_))));
+    }
 }

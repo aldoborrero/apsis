@@ -11,20 +11,25 @@ cargo test  -p apsis-engine --features probe-exec   # + the ffprobe helper
 ## Use (as a library)
 
 ```rust
-use apsis_engine::{parse_probe, plan, VaapiBackend, Backend};
+use apsis_engine::{Backend, HardwareConfig, VaapiBackend, parse_probe, plan};
 
-let probe   = parse_probe(&ffprobe_json)?;         // or probe_file(path, ffprobe)
-let plan    = plan(&probe, &profile);              // profile from scheduler.toml
-if plan.should_skip {
-    // already compliant → no job
+let probe     = parse_probe(&ffprobe_json)?;          // or probe_file(path, ffprobe)
+let file_plan = plan(input_path, &probe, &profile);   // profile from scheduler.toml
+if file_plan.should_skip {
+    // already compliant (or unsupported) → no job
 } else {
-    let backend = VaapiBackend { device: "/dev/dri/renderD128".into(),
-                                 hw_decode: vec!["hevc".into(), "av1".into(), "vp9".into()],
-                                 sei_workaround: true, async_depth: 4 };
-    let spec = backend.build(&plan, input, tmp_output);
-    let args = spec.to_args();                      // exact ffmpeg argv for the worker
+    let backend = VaapiBackend {
+        hardware: HardwareConfig::default(),          // hw_decode set, sei/async_depth, env
+        vaapi_device: "/dev/dri/renderD128".into(),
+        ffmpeg_path: "ffmpeg".into(),
+    };
+    let args = backend.build(&file_plan, &profile).build(); // exact ffmpeg argv for the worker
 }
 ```
+
+The command builder needs both the plan and the `Profile` (encoder, quality and stereo
+bitrate live on the profile, mirroring the Python `command.py`). A `CpuBackend { ffmpeg_path }`
+is the fallback: `libx265`/`libsvtav1` with `crf` + `preset`.
 
 ## Test strategy (maps to Success Criteria)
 
