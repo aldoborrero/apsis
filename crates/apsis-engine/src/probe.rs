@@ -42,6 +42,7 @@ pub struct Probe {
 
 impl Probe {
     /// HDR iff the video stream's colour transfer is PQ or HLG.
+    #[must_use]
     pub fn is_hdr(&self) -> bool {
         match &self.video {
             Some(v) => matches!(v.color_transfer.as_str(), "smpte2084" | "arib-std-b67"),

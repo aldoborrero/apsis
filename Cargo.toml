@@ -11,3 +11,17 @@ members = [
 edition = "2021"
 license = "MIT"
 repository = "https://github.com/aldoborrero/pyflows"
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+unreachable_pub = "warn"
+rust_2018_idioms = { level = "warn", priority = -1 }
+
+[workspace.lints.clippy]
+# clippy::all (correctness/suspicious/style/complexity/perf) is a hard error;
+# pedantic is a visible warning. CI runs `cargo clippy --all-targets -- -D warnings`.
+all = { level = "deny", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+# a couple of noisy pedantic lints we deliberately accept:
+module_name_repetitions = "allow"
+missing_errors_doc = "allow"

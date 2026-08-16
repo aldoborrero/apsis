@@ -7,3 +7,6 @@ repository.workspace = true
 description = "apsis worker: run / verify / replace, backends — stub"
 
 [dependencies]
+
+[lints]
+workspace = true

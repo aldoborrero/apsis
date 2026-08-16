@@ -7,3 +7,6 @@ repository.workspace = true
 description = "apsis coordinator: scan / reconcile / enqueue — stub"
 
 [dependencies]
+
+[lints]
+workspace = true
