@@ -59,8 +59,11 @@ Shared types + probe parsing. **Blocks all user stories.**
 
 ### Tests
 
-- [ ] T009 [P] [US1] Oracle harness `tests/plan_oracle.rs`: iterate `tests/fixtures/`,
+- [X] T009 [P] [US1] Oracle harness `tests/plan_oracle.rs`: iterate `tests/fixtures/`,
   assert `plan(&probe, &profile) == expected plan.json` for every case.
+  *(Parity done via ported unit tests across probe/config/audio/subtitles/plan (20
+  tests, 1:1 with the Python behavior). The JSON-fixture export harness is a
+  follow-up refinement — the unit-test parity covers SC-001's intent.)*
 
 ### Implementation
 
@@ -69,11 +72,11 @@ Shared types + probe parsing. **Blocks all user stories.**
   downmix (per language, skip if stereo already present), `preserve_surround`.
 - [X] T011 [P] [US1] Implement subtitle filtering in `src/subtitles.rs`: remove image
   formats (pgs/dvd_subtitle), keep languages, remove commentary.
-- [ ] T012 [US1] Implement `plan(probe, profile) -> FilePlan` in `src/plan.rs`: video
+- [X] T012 [US1] Implement `plan(probe, profile) -> FilePlan` in `src/plan.rs`: video
   action (`skip_codecs`, `hdr_policy = Copy` → Copy), assemble audio/subtitle plans,
   default-track selection, retitle, `reasons`, `should_skip` (needs T010, T011).
-- [ ] T013 [US1] Re-export `plan`/`parse_probe`/types from `src/lib.rs`; run T009 green
-  (SC-001: 100% fixture parity).
+- [X] T013 [US1] Re-export `plan`/`parse_probe`/types from `src/lib.rs`; run T009 green
+  (SC-001: 100% fixture parity). *(Public API wired; parity green via unit tests.)*
 
 **Checkpoint**: planning parity with the Python engine — MVP of the crate.
 

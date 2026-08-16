@@ -6,9 +6,10 @@
 //!
 //! See `specs/001-apsis-engine/` for the spec, plan, and data model.
 //!
-//! **Status:** the plan *logic* (`plan`, audio/subtitle selection, the HDR-copy
-//! override) is NOT ported yet — only the types exist. This crate is not
-//! oracle-faithful until spec 001 phase 3 (US1) lands `plan_from_probe`.
+//! **Status:** planning ([`plan`]), probe parsing, and audio/subtitle selection
+//! are ported and covered by unit tests. Command building (the `Backend` trait)
+//! is the next phase (US2). A JSON-fixture oracle harness (exporting from the
+//! Python engine) is the remaining parity task (T009).
 
 pub mod audio;
 pub mod config;
@@ -26,7 +27,7 @@ pub use config::{
 pub use error::EngineError;
 pub use plan::{
     AudioTrackPlan, FilePlan, OutputPlan, PlanReason, PlanScope, PlanStatus, ReasonCode, SubAction,
-    SubtitleTrackPlan, TrackAction, VideoAction, VideoPlan,
+    SubtitleTrackPlan, TrackAction, VideoAction, VideoPlan, plan,
 };
 pub use probe::{Probe, StreamInfo, parse_probe};
 pub use subtitles::filter_subtitles;
