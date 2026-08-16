@@ -1,10 +1,11 @@
 //! Profile configuration (port of `_engine/config.py`). Deserialized from the
 //! coordinator's `scheduler.toml`; the engine consumes a validated `Profile`.
 //!
-//! Validation is a manual `Profile::validate` for now (quality range); wiring the
-//! `garde` derive is a follow-up (see spec 001 tasks, Polish).
+//! Range validation happens at deserialization (see `de_quality`), so an
+//! out-of-range `Profile` cannot be constructed — matching pydantic's
+//! construct-time guarantee. A richer `garde` derive can add more rules later.
 
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize, de};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -38,11 +39,12 @@ pub enum HdrPolicy {
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct VideoConfig {
     pub codec: VideoCodec,
+    // Used by the VAAPI backend in US2 (main10 / p010 for 10-bit sources) — keep.
     #[serde(default = "d_bit_depth")]
     pub bit_depth: u8,
     #[serde(default = "d_encoder")]
     pub encoder: Encoder,
-    #[serde(default = "d_quality")]
+    #[serde(default = "d_quality", deserialize_with = "de_quality")]
     pub quality: u8,
     #[serde(default = "d_fallback")]
     pub fallback: Fallback,
@@ -69,6 +71,19 @@ fn d_hdr_policy() -> HdrPolicy {
 }
 fn d_true() -> bool {
     true
+}
+
+/// Validate `quality` at deserialization so an out-of-range `Profile` cannot be
+/// constructed (matching the Python pydantic `field_validator`). Surfaces as a
+/// serde error → `EngineError::ParseJson`.
+fn de_quality<'de, D: Deserializer<'de>>(d: D) -> Result<u8, D::Error> {
+    let v = u8::deserialize(d)?;
+    if v > 51 {
+        return Err(de::Error::custom(format!(
+            "video.quality must be 0..=51, got {v}"
+        )));
+    }
+    Ok(v)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -156,15 +171,29 @@ pub struct Profile {
     pub output: OutputConfig,
 }
 
-impl Profile {
-    /// Validate value ranges. Returns the first violation as a message.
-    pub fn validate(&self) -> Result<(), String> {
-        if self.video.quality > 51 {
-            return Err(format!(
-                "video.quality must be 0..=51, got {}",
-                self.video.quality
-            ));
-        }
-        Ok(())
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rejects_out_of_range_quality() {
+        let json =
+            r#"{"video":{"codec":"hevc","quality":99},"audio":{},"subtitles":{},"output":{}}"#;
+        let err = serde_json::from_str::<Profile>(json).unwrap_err();
+        assert!(err.to_string().contains("0..=51"), "got: {err}");
+    }
+
+    #[test]
+    fn applies_python_defaults() {
+        let json = r#"{"video":{"codec":"av1"},"audio":{},"subtitles":{},"output":{}}"#;
+        let p: Profile = serde_json::from_str(json).unwrap();
+        assert_eq!(p.video.codec, VideoCodec::Av1);
+        assert_eq!(p.video.quality, 22);
+        assert_eq!(p.video.encoder, Encoder::Vaapi);
+        assert!(p.audio.remove_commentary);
+        assert!(p.audio.preserve_surround);
+        assert_eq!(p.audio.default_language, "eng");
+        assert_eq!(p.output.container, "mkv");
+        assert!(p.output.replace_original);
     }
 }

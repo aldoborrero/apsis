@@ -4,8 +4,9 @@
 use thiserror::Error;
 
 #[derive(Debug, Error)]
+#[non_exhaustive]
 pub enum EngineError {
-    #[error("failed to parse ffprobe JSON: {0}")]
+    #[error("failed to parse ffprobe JSON or profile: {0}")]
     ParseJson(#[from] serde_json::Error),
 
     #[cfg(feature = "probe-exec")]
@@ -13,6 +14,6 @@ pub enum EngineError {
     Ffprobe(#[from] std::io::Error),
 
     #[cfg(feature = "probe-exec")]
-    #[error("ffprobe exited unsuccessfully")]
-    FfprobeStatus,
+    #[error("ffprobe exited unsuccessfully (code {code:?}): {stderr}")]
+    FfprobeStatus { code: Option<i32>, stderr: String },
 }

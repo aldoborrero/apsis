@@ -4,39 +4,32 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::EngineError;
 
-/// One media stream, mirroring the Python `StreamInfo`.
+/// One media stream, mirroring the Python `StreamInfo`. Strict: this type faces
+/// the oracle-parity fixtures, so every field is required and unknown fields are
+/// rejected (a shape mismatch must be a hard error, not a silent default).
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct StreamInfo {
     pub index: u32,
     pub codec_type: String,
     pub codec: String,
-    #[serde(default)]
     pub language: String,
-    #[serde(default)]
     pub title: String,
-    #[serde(default)]
     pub channels: u32,
-    #[serde(default)]
     pub width: u32,
-    #[serde(default)]
     pub height: u32,
-    #[serde(default)]
     pub is_default: bool,
-    #[serde(default)]
     pub color_transfer: String,
-    #[serde(default)]
     pub color_primaries: String,
-    #[serde(default)]
     pub color_space: String,
 }
 
 /// Parsed probe result: the first video stream + all audio/subtitle streams.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Probe {
     pub video: Option<StreamInfo>,
-    #[serde(default)]
     pub audio: Vec<StreamInfo>,
-    #[serde(default)]
     pub subtitles: Vec<StreamInfo>,
 }
 
@@ -134,7 +127,10 @@ pub fn probe_file(path: &std::path::Path, ffprobe: &std::path::Path) -> Result<P
         .arg(path)
         .output()?;
     if !out.status.success() {
-        return Err(EngineError::FfprobeStatus);
+        return Err(EngineError::FfprobeStatus {
+            code: out.status.code(),
+            stderr: String::from_utf8_lossy(&out.stderr).into_owned(),
+        });
     }
     parse_probe(&String::from_utf8_lossy(&out.stdout))
 }
