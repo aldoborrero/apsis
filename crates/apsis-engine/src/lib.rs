@@ -15,16 +15,18 @@ pub mod audio;
 pub mod config;
 mod constants;
 pub mod error;
+pub mod ffmpeg;
 pub mod plan;
 pub mod probe;
 pub mod subtitles;
 
 pub use audio::{AudioAction, AudioActionKind, build_audio_plan};
 pub use config::{
-    AudioConfig, Encoder, Fallback, HdrPolicy, OutputConfig, Profile, StereoConfig, SubtitleConfig,
-    VideoCodec, VideoConfig,
+    AudioConfig, Encoder, Fallback, HardwareConfig, HdrPolicy, OutputConfig, Profile, StereoConfig,
+    SubtitleConfig, VaapiConfig, VideoCodec, VideoConfig,
 };
 pub use error::EngineError;
+pub use ffmpeg::FfmpegCommand;
 pub use plan::{
     AudioTrackPlan, FilePlan, OutputPlan, PlanReason, PlanScope, PlanStatus, ReasonCode, SubAction,
     SubtitleTrackPlan, TrackAction, VideoAction, VideoPlan, plan,

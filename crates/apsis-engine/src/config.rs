@@ -171,6 +171,74 @@ pub struct Profile {
     pub output: OutputConfig,
 }
 
+/// VAAPI hardware settings (port of `_engine/config.py`'s `VaapiConfig`). This is
+/// worker/host-level config the engine's command builder consumes.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct VaapiConfig {
+    #[serde(default = "d_va_name")]
+    pub device: String,
+    #[serde(default = "d_hw_decode")]
+    pub hw_decode_codecs: Vec<String>,
+    #[serde(default = "d_sw_decode")]
+    pub sw_decode_codecs: Vec<String>,
+    #[serde(default = "d_upload_filter")]
+    pub upload_filter: String,
+    #[serde(default = "d_async_depth")]
+    pub async_depth: u32,
+}
+
+fn d_va_name() -> String {
+    "va".to_string()
+}
+fn d_hw_decode() -> Vec<String> {
+    vec!["hevc".to_string(), "av1".to_string(), "vp9".to_string()]
+}
+fn d_sw_decode() -> Vec<String> {
+    vec!["h264".to_string()]
+}
+fn d_upload_filter() -> String {
+    "format=nv12,hwupload_vaapi".to_string()
+}
+fn d_async_depth() -> u32 {
+    4
+}
+
+impl Default for VaapiConfig {
+    fn default() -> Self {
+        Self {
+            device: d_va_name(),
+            hw_decode_codecs: d_hw_decode(),
+            sw_decode_codecs: d_sw_decode(),
+            upload_filter: d_upload_filter(),
+            async_depth: d_async_depth(),
+        }
+    }
+}
+
+/// Hardware/environment config (port of `_engine/config.py`'s `HardwareConfig`).
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct HardwareConfig {
+    #[serde(default = "d_hw_env")]
+    pub env: std::collections::HashMap<String, String>,
+    #[serde(default)]
+    pub vaapi: VaapiConfig,
+}
+
+fn d_hw_env() -> std::collections::HashMap<String, String> {
+    let mut m = std::collections::HashMap::new();
+    m.insert("AMD_DEBUG".to_string(), "noefc".to_string());
+    m
+}
+
+impl Default for HardwareConfig {
+    fn default() -> Self {
+        Self {
+            env: d_hw_env(),
+            vaapi: VaapiConfig::default(),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
