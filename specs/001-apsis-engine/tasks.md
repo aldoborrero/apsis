@@ -122,13 +122,15 @@ Shared types + probe parsing. **Blocks all user stories.**
 
 ### Tests
 
-- [ ] T020 [P] [US3] `tests/skip.rs`: assert `should_skip == true` for all compliant
-  fixtures and that no command is required; add a never-drop-all-audio assertion.
+- [X] T020 [P] [US3] `tests/skip.rs` (public-API integration test): assert `should_skip`
+  for compliant files and that no command is required; add a never-drop-all-audio assertion.
 
 ### Implementation
 
-- [ ] T021 [US3] Ensure `should_skip == reasons.is_empty()` and that compliant fixtures
-  produce it; confirm the audio guard (FR-006) holds under `keep_languages` misses.
+- [X] T021 [US3] Skip invariants: `compliant == reasons.is_empty()` (universal), and
+  `should_skip == (status != ChangesRequired)` — skip covers **both** compliant *and*
+  unsupported (no-video) files; only `ChangesRequired` builds a command. Audio guard
+  (FR-006) confirmed under a `keep_languages` miss (all tracks retained).
 
 **Checkpoint**: all three stories independently functional.
 
