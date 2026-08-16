@@ -15,6 +15,17 @@ and it fits the homelab's orbital naming (moons, `orbiit.xyz`). Binaries
 crates.io (2026-08-16). Supersedes the retired `pyflows` daemon; the current
 Unmanic plugin `pyflows_transcode` becomes `apsis_transcode` at cutover.
 
+## Decisions (settled)
+
+| # | Decision | Rationale |
+|---|----------|-----------|
+| D1 | **Name = `apsis`; license = MIT** | orbital theme; MIT so it's freely adoptable (unlike Unmanic GPL / FileFlows closed) |
+| D2 | **Keep Unmanic + `pyflows_transcode` in prod for now** | works today; build only when its friction is worth the port |
+| D3 | **Transport = NATS JetStream; media = shared NFS** | jobs carry only metadata — no file transfer (Unmanic's shared-path mode, validated in Appendix A) |
+| D4 | **No runtime plugin system** — compile-time modularity instead | keeps single-pass + "thin"; avoids the Rust plugin-ABI / multi-pass tax (see §2) |
+| D5 | **No web UI** — observability via Grafana + VictoriaMetrics + logs | deletes Unmanic's biggest subsystem |
+| D6 | **Reuse the engine** (`_engine` → `apsis-engine` port); build only the orchestration | the transcode brain is already ours |
+
 ---
 
 ## 1. Why this exists
@@ -34,6 +45,19 @@ The insight that makes a rewrite tractable: **we already have the UI/history
 problem solved** by Grafana + VictoriaMetrics + logs. We delete Unmanic's
 biggest chunk (dashboard/history/DB) and replace it with metrics we already
 scrape. What remains is small and bounded.
+
+### Three layers — what's a *port* vs a *new build*
+
+Keep three layers distinct; only two of them are new work:
+
+| Layer | Unmanic | pyflows today | apsis |
+|-------|---------|---------------|-------|
+| **Orchestration** (scan, queue, workers, replace, UI) | Unmanic core (~4600 lines) | Unmanic (reused) | `apsis-coordinator` + `apsis-worker` — **new build** |
+| **Decision + ffmpeg command** ("what to do to a file") | a chain of stock plugins | **`_engine`** (one custom plugin) | `apsis-engine` — **port of `_engine`** |
+| **Profiles / config** | plugin settings in SQLite | `config.yaml` | `scheduler.toml` — declarative |
+
+The decision layer was **never Unmanic's** — it's our `_engine`. So leaving Unmanic
+loses only the *orchestration* (which we rebuild), not the transcode brain.
 
 ### Design principles
 
@@ -76,6 +100,75 @@ scrape. What remains is small and bounded.
   leader election.
 - Workers trust the coordinator's plan; they don't re-plan (they only re-probe
   the output to verify).
+
+### Extensibility & modularity — compile-time, **not** a runtime plugin system
+
+Decision **D4**: apsis is **modular in code**, not pluggable at runtime.
+
+- **Backends** are a `Backend` trait (`VaapiBackend`, `NvencBackend`, `CpuBackend`);
+  the abstract plan is materialized per-backend. New hardware = a new trait impl.
+- **Transform steps** (audio, subtitles, video) are ordered functions that
+  contribute to **one** `FfmpegCommandSpec`, then a **single** ffmpeg run — exactly
+  what `_engine` already does; apsis just formalizes it as a stage pipeline.
+- Extend by **adding a Rust module + recompiling** — trivial in the nix/static-binary
+  workflow.
+
+Why not a runtime plugin system (Unmanic/FileFlows-style):
+1. **It reintroduces multi-pass.** Unmanic's plugins each run their own ffmpeg
+   (Appendix A) → N passes per file. apsis's whole point is one coherent pass.
+2. **In Rust it's a heavy subsystem.** No stable ABI → native `.so` plugins are
+   fragile; the alternatives (WASM/wasmtime, embedded Rhai/Lua, subprocess) are each
+   a large build that re-bloats the "thin" scheduler back toward Unmanic.
+3. **YAGNI for a homelab tool.** A runtime plugin ecosystem pays off for a
+   *published product with a community* — a different, order-of-magnitude project.
+
+*If* apsis ever becomes such a product, the FileFlows study (Appendix B) shows the
+light path: an **embedded-script tier** (Rhai/Lua ≈ FileFlows "Scripts") + composable
+**sub-profiles** (≈ SubFlows) — most of the extensibility without a compiled-plugin ABI.
+
+### Accumulator yes, node graph no
+
+apsis adopts the **command accumulator** — the single-pass core of Tdarr Flows /
+FileFlows, where ordered steps mutate one `FfmpegCommandSpec` and ffmpeg runs once —
+but **not** the **user-authored node graph**. The graph is a *product* feature, not a
+*tool* one:
+
+- A useful graph is a whole subsystem (graph model, JSON serialization, an executor, a
+  node-type registry, an editor) — the product surface we dropped — and a graph with
+  *custom* nodes **is** the runtime-plugin ABI rejected in **D4**. Built-in-only nodes
+  are just a clunkier config format.
+- It **weakens the single-pass guarantee:** real flows mix accumulator nodes with nodes
+  that spawn their own ffmpeg, plus per-file branching, so "always one pass" softens.
+- A TOML **profile is far more legible/diffable** (git-recoverability) than a 20-node
+  JSON graph.
+- **YAGNI:** the graph's value is *arbitrary user-authored per-file logic* — moot when
+  the pipeline is a single, known one. Profiles cover 100% of the requirement.
+
+Key insight: apsis's **stage pipeline *is* the graph's execution model** (ordered
+contributions → one command), just authored in Rust at compile time and parameterized
+by profiles. We keep the graph's *execution model* and drop only its *runtime
+authorability* — the expensive, product-y part. The "industry converges on graph +
+accumulator" observation correlates with *being a product*, not with correctness for a
+single-pipeline tool. If apsis ever became a published product (or needed many divergent
+per-file behaviors editable without a rebuild), the graph would pay off — as graph +
+accumulator + a scripting tier.
+
+### Engine scope — generic plan, specific backends
+
+`apsis-engine` is generic in its **decision** layer and deliberately narrow in its
+**command** layer:
+- **Generic (config-driven):** probe, plan, audio/subtitle filtering, profiles — a
+  reusable *"given this file + profile, what should the output streams be?"* planner,
+  independent of hardware or media. Usable as a standalone library.
+- **Specific (today):** output codecs = **HEVC/AV1 only**; encoders = **VAAPI + CPU**
+  (libx265/libsvtav1), AMD-tuned (`sei=hdr`). No NVENC/QSV/H.264/VP9 output yet.
+- **Grows without a rewrite:** the abstract plan is backend-neutral; a `Backend` trait
+  (`VaapiBackend`/`NvencBackend`/`CpuBackend`) materializes it. New hardware = a trait
+  impl (NVENC for sirius); a new output codec = extend the enum + one codec→encoder entry.
+
+So it's "generic *within its domain*" (library HEVC/AV1 cleanup transcode), not a general
+ffmpeg framework — matching *thin/YAGNI*. Breadth (a published-product concern) is added
+by growing backends/codecs on the same design, not by redesigning.
 
 ---
 
@@ -238,6 +331,50 @@ re-probe), so a duplicate delivery cannot double-transcode or corrupt anything.
 `status ∈ {done, skipped, failed}`. `used_fallback=true` when VAAPI failed and the
 worker fell back to CPU (libx265).
 
+### Data model — the core contracts
+
+Five types are the whole contract. Two travel over NATS (`Job`, `Result`, above);
+three are internal. Sketches (Rust-flavored; serde on the wire ones):
+
+**`FilePlan`** — the abstract, backend-neutral decision the coordinator computes and
+ships inside a `Job`. The worker materializes it per backend; it never re-plans.
+```rust
+struct FilePlan {
+  video: VideoPlan,          // { action: Copy|Encode, codec: Hevc|Av1, qp: u8, hdr: Copy|Tonemap|Encode }
+  audio: Vec<AudioTrack>,    // { src_idx, action: Copy|Encode|Drop, codec, channels, lang, default, title }
+  subtitles: Vec<SubTrack>,  // { src_idx, action: Copy|Drop, codec, lang, default }
+  container: String,         // "mkv"
+  replace_original: bool,
+  should_skip: bool,         // true → already compliant, no job
+}
+```
+
+**`StateEntry`** — one KV value per file path (`transcode_state` bucket).
+```rust
+struct StateEntry {
+  status: Unknown | Pending | InProgress | Done | Failed,
+  version: String,           // "mtime:size" — the change token
+  job_id: Option<Ulid>,
+  attempts: u8,
+  last_error: Option<String>,
+  updated_at: Timestamp,
+}
+```
+
+**`FfmpegCommandSpec`** — worker-internal; every transform stage + the chosen backend
+contribute to ONE spec, then a single ffmpeg run (this *is* the "no runtime plugins,
+single pass" mechanism).
+```rust
+struct FfmpegCommandSpec {
+  inputs: Vec<Input>,        // main file (+ optional CC sidecar)
+  global: Vec<String>,       // -init_hw_device / -hwaccel / env
+  maps: Vec<StreamMap>,      // per output stream: source, codec, opts, metadata, disposition
+  output: PathBuf,           // temp on the same FS as the source
+}
+```
+Everything downstream (state machine, metrics, dead-letter) keys off `job_id` + the
+file `version`.
+
 ---
 
 ## 5. Job lifecycle
@@ -329,6 +466,8 @@ prefer      = ["vaapi", "nvenc"]   # backend preference order; workers offer wha
 fallback    = "cpu"         # cpu | none  (VAAPI→libx265 on failure)
 skip_codecs = ["hevc"]      # already-target → copy (no re-encode)
 hdr_policy  = "copy"        # copy | tonemap | encode  (copy = don't re-encode HDR)
+# quality is a fixed QP today. Future (FileFlows AutoCRF idea): target a metric —
+#   quality = { target_vmaf = 95 }   # search QP to hit VMAF 95, bounded by min/max_qp
 
 [profiles.tv-shows.audio]
 keep_languages    = ["eng", "spa"]
@@ -365,9 +504,16 @@ validation. Env expansion (`${VAR}`) via a tiny helper, as today.
 ```toml
 [worker]
 id              = "rhea"
-max_concurrency = 1          # AMD VCN HEVC encode is single-session (see GOTCHAS)
+max_concurrency = 1          # runner count (AMD VCN HEVC encode is single-session)
+priority        = 100        # higher = fed jobs first (FileFlows-style node priority)
+schedule        = "*"        # cron-ish "quiet hours"; "*" = always eligible
 ffmpeg          = "/usr/lib/jellyfin-ffmpeg/ffmpeg"
 ffprobe         = "/usr/lib/jellyfin-ffmpeg/ffprobe"
+
+# Map coordinator/library paths → this host's local mounts. Identity on rhea;
+# real on sirius/WSL where the NFS mount point differs (FileFlows: per-node path map).
+[worker.path_map]
+"/hdd" = "/hdd"
 
 [[worker.backend]]
 kind          = "vaapi"
@@ -377,7 +523,8 @@ hw_decode     = ["hevc", "av1", "vp9"]   # SW-decode everything else (e.g. h264)
 sei_workaround = true        # emit `-sei hdr` (drop a53_cc) — the 780M bug fix
 
 # sirius/worker.toml would instead declare:
-#   [[worker.backend]] kind = "nvenc"  device = "0"  (no sei workaround needed)
+#   [worker.path_map] "/hdd" = "/mnt/rhea-hdd"       # the WSL NFS mount point
+#   [[worker.backend]] kind = "nvenc"  device = "0"  # no sei workaround needed
 ```
 
 Hardware truth lives here, next to the box. The coordinator's plan says *"encode
@@ -404,6 +551,70 @@ to hevc@qp22, HDR copy"*; each worker's backend decides *how* (VAAPI + `sei=hdr`
 - **Cold start / KV wiped:** coordinator rescans, re-derives desired vs actual,
   re-enqueues only true drift. Nothing to restore. (This is the recoverability
   guarantee in practice.)
+
+### How Unmanic does it (contrast)
+
+Unmanic is **not** a desired-vs-actual reconciler — it's a **discover → test →
+enqueue** pipeline with the decision spread across plugins:
+1. **Discover:** periodic walk (`libraryscanner.py`) or inotify event
+   (`eventmonitor.py`, watchdog); per-library `enable_scanner`/`enable_inotify`.
+2. **Test:** `FileTest.should_file_be_added_to_task_list()` (`filetest.py:107-169`)
+   runs built-ins (`.unmanicignore`; a **history blacklist** of previously *failed*
+   paths) then each enabled plugin's `library_management.file_test` hook — every
+   plugin **re-probes** and votes `add_file_to_pending_tasks` (first non-None wins).
+   There is **no single plan**; "process?" = "does any plugin want to touch this?".
+3. **Dedup:** check the Tasks DB by **absolute path** only (`taskhandler.py:150-160`);
+   inotify events processed **sequentially** to avoid a double-add (`eventmonitor.py:252`).
+4. Worker runs it → **History DB** on completion.
+
+What apsis improves: Unmanic **re-probes every file on every scan** (no "unchanged →
+skip probe" cache) → apsis's `version = mtime:size` skips it; **path-only dedup +
+permanent failed-blacklist**, split across Tasks/History DBs → apsis folds it into one
+KV with a **version-aware** `failed@version` (a changed file retries); **no debounce,
+no task lease** (`taskhandler.py:116`, `taskqueue.py:227-242`) → apsis bakes in
+debounce and gets the lease free from JetStream `AckWait`.
+
+### Reconcile algorithm (one pass)
+
+```
+for path in discover(libraries):             # periodic walk ⊎ inotify events
+    if not is_video(path): continue
+    profile = profile_for(path)              # longest-matching library path
+    if profile is None: continue
+    if within_debounce(path): continue       # still being written → skip this pass
+
+    ver = f"{mtime(path)}:{size(path)}"
+    st  = kv.get(path)                        # {status, version, job_id} | None
+    if st and st.version == ver and st.status in {done, pending, in_progress, failed}:
+        continue                             # unchanged & handled → no probe, no-op
+
+    plan = engine.plan_file(path, profile)   # probe + decide — the ONLY decision point
+    if plan.should_skip:
+        kv.put(path, {status: done, version: ver})       # compliant
+    else:
+        kv.cas(path, {status: pending, version: ver})    # claim this version
+        nats.publish("jobs.transcode.normal", Job{path, ver, plan})
+```
+Idempotent: re-running only acts on drift. inotify calls the same body for one path;
+the periodic walk is the backstop. (Contrast: Unmanic runs `plan`-equivalent logic in
+*every plugin, every scan*; here it's one `plan_file`, gated by the `version` cache.)
+
+### File state machine
+
+```mermaid
+stateDiagram-v2
+    [*] --> unknown
+    unknown --> done: compliant (should_skip)
+    unknown --> pending: drift (plan says process)
+    pending --> in_progress: worker pulls (KV CAS)
+    in_progress --> done: verified + replaced
+    in_progress --> failed: MaxDeliver / verify fail (dead-letter)
+    in_progress --> pending: AckWait lapse (worker crash → redeliver)
+    failed --> pending: file changes (new mtime:size)
+    done --> pending: file changes (new mtime:size)
+```
+`version = mtime:size` gates every exit from a terminal state — a compliant or failed
+file only re-enters the queue when the bytes actually change.
 
 ---
 
@@ -489,6 +700,22 @@ Nothing is "live-only." The only runtime state is a *cache* of a computation ove
 git-config + files, so a from-scratch rebuild (empty NATS) converges to the same
 result on the next reconcile.
 
+### Failure modes & recovery
+
+Recoverability (above) is about *total loss*; this is *runtime* faults.
+
+| Failure | Detection | Response |
+|---|---|---|
+| **Worker crash mid-encode** | `AckWait` lapses (heartbeats stop) | JetStream redelivers to a peer; partial temp discarded (never renamed) |
+| **Coordinator crash** | systemd; workers keep draining the queue | restart re-reads KV + rescans; in-flight jobs unaffected (workers own them) |
+| **NATS down** | client connect error | reconnect with **exp backoff + jitter**; running ffmpeg continues; new work pauses |
+| **Poison job** (always fails) | `MaxDeliver` reached | `term()` → `events.job.<id>.dead` → **VMAlert**; KV `failed@version` suppresses re-enqueue until the file changes |
+| **Partial / corrupt output** | worker ffprobe verify (streams/duration) fails | discard temp, `nak` → retry; original untouched |
+| **NFS mount missing on a worker** | `[worker.path_map]` target absent at startup | worker won't register / `apsis_worker_up=0` — refuses to transcode to a dead path |
+| **ffmpeg hangs** (no progress) | no `-progress` output for N min | tree-kill (SIGTERM→SIGKILL), `nak` |
+| **Disk full** (temp) | ffmpeg non-zero / write error | fail job, alert; original untouched (temp on same FS) |
+| **Invalid `scheduler.toml`** | `garde` validation at load | coordinator fails fast; the last-good deployment keeps running until fixed |
+
 ---
 
 ## 12. Crate stack (verified 2026-08-14)
@@ -529,9 +756,63 @@ sirius joins (distributed transport).
    `pyflows_transcode` Unmanic plugin. Keep Unmanic installable as a fallback
    until a few cycles pass clean.
 
+### Effort / sizing
+
+Bottom-up estimate (LOC is a rough proxy, ±40%). Anchor: ~1,414 lines of engine
+logic **already exist** as Python (`_engine/`), so that layer is a *port*, not design.
+
+| Crate / binary | What | Rust LOC |
+|---|---|---|
+| `apsis-engine` (lib) | port of `_engine`: probe, plan, config models (serde), audio/subs, command + backends | 1,800 – 2,400 |
+| `apsis-coordinator` (bin) | scan (notify+debounce), reconcile, NATS produce, KV, dedup+blacklist, metrics | 1,200 – 1,800 |
+| `apsis-worker` (bin) | pull + ack/heartbeat/DLQ, backends VAAPI/NVENC, ffmpeg + progress, verify+replace+stat, tree-kill | 1,200 – 1,800 |
+| `apsis-common` | NATS wrapper, telemetry, error types | 300 – 500 |
+| **Production total** | | **≈ 4,500 – 6,500** |
+| Tests (Python tests as the oracle to port) | | +2,000 – 4,000 |
+
+Crates absorb what would otherwise be thousands of lines: durable queue + pub/sub
+(`async-nats`), config + validation (`serde`/`toml`/`garde`), file-watch (`notify`),
+runtime (`tokio`), metrics exporter — and the **UI = 0 lines** (Grafana).
+
+Phased, so the ~6k isn't one bite (mirrors the rollout phases above):
+
+| Phase | Scope | New Rust |
+|---|---|---|
+| **1 — rhea only** | coordinator+worker in-process, `apalis`/SQLite (no NATS), optionally shelling out to the Python engine | ≈ 2,000 – 3,000 → a working single-node system |
+| **2 — distributed** | + NATS JetStream, + sirius NVENC worker, + full engine port to Rust | + 2,500 – 3,500 |
+
+Rough calendar at a hobby pace: **a couple of weekends to Phase 1; ~1–2 months to
+the full thing** — not an odyssey, since Unmanic's expensive parts (UI, file transfer,
+queue) are either deleted or absorbed by a crate.
+
+### Testing & validation
+
+Confidence, cheapest → strongest:
+
+- **Engine unit tests = the port oracle.** The existing Python `_engine` tests port
+  1:1; `apsis-engine` must produce the **same plan** for the same probe. Port the
+  fixtures, not just the asserts.
+- **Golden-command tests.** For a set of real samples, assert the **exact ffmpeg
+  argument vector** each backend builds (VAAPI incl. `-sei hdr`, NVENC, CPU fallback).
+  The command builder is the riskiest surface — pin it.
+- **Integration tests.** Coordinator+worker against an **ephemeral NATS**
+  (testcontainers) over a temp library: enqueue → transcode → assert replace + KV
+  state + result event. Include crash paths (kill a worker mid-job → redelivery;
+  poison job → dead-letter).
+- **Shadow mode = the cutover gate.** Before replacing anything, run apsis **dry-run**
+  (plan + metrics, no write) beside Unmanic on prod libraries and **diff the
+  decisions**: every file apsis would touch, would Unmanic too? Any divergence is a
+  bug to explain before cutover.
+- **Idempotency assertion.** Two full reconciles with no file changes → the second
+  enqueues **zero** jobs (proves the `version`/skip logic).
+
 ---
 
 ## 14. Open questions
+
+**Resolved during design** (see the Decisions table + §2): project **name = `apsis`**;
+**MIT** license; **no runtime plugin system** (compile-time modularity); transport =
+**NATS + shared NFS**. Still open:
 
 - **NATS home:** rhea LXC (simple, co-located) vs tethys k8s (GitOps/monitored).
   Leaning LXC first.
@@ -699,4 +980,3 @@ config is `serde` + `toml` + `garde`. The only real work we own is **the engine
 by leaning on Grafana. That is what keeps this a *thin* scheduler and not a
 second Unmanic. Build it only when Unmanic's friction is worth the port; the
 design above is ready when that day comes.
-```
