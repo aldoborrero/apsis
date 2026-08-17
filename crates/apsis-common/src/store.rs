@@ -1,6 +1,7 @@
 //! State-store + job-publisher abstractions, with NATS-backed impls and
 //! in-memory fakes, so coordinator/worker logic is unit-testable without a
-//! broker. The NATS impls are exercised by the gated integration tests.
+//! broker. The unit tests below exercise the fakes; the NATS-backed impls get
+//! integration coverage against a real `nats-server` in the worker phase (US3).
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -21,8 +22,10 @@ pub enum StoreError {
     /// A compare-and-set lost: the key was created/updated concurrently.
     #[error("CAS conflict on key {0:?}")]
     Conflict(String),
+    /// Any other backend failure. Boxed as `dyn Error` (not an async-nats type)
+    /// so callers aren't coupled to the broker crate's version.
     #[error(transparent)]
-    Backend(async_nats::Error),
+    Backend(Box<dyn std::error::Error + Send + Sync>),
 }
 
 fn to_bytes<T: serde::Serialize>(v: &T) -> Result<Bytes, StoreError> {
@@ -53,8 +56,16 @@ pub trait JobPublisher: Send + Sync {
 // --- NATS-backed impls (newtypes avoid colliding with kv::Store's inherent
 // create/update/put) ---
 
-/// KV-backed [`StateStore`].
-pub struct KvStateStore(pub Store);
+/// KV-backed [`StateStore`]. The inner `Store` is private so callers go through
+/// the trait (and its CAS error mapping), not the raw kv API.
+pub struct KvStateStore(Store);
+
+impl KvStateStore {
+    #[must_use]
+    pub fn new(store: Store) -> Self {
+        Self(store)
+    }
+}
 
 #[async_trait]
 impl StateStore for KvStateStore {
@@ -109,7 +120,14 @@ impl StateStore for KvStateStore {
 }
 
 /// JetStream-backed [`JobPublisher`].
-pub struct NatsPublisher(pub Context);
+pub struct NatsPublisher(Context);
+
+impl NatsPublisher {
+    #[must_use]
+    pub fn new(ctx: Context) -> Self {
+        Self(ctx)
+    }
+}
 
 #[async_trait]
 impl JobPublisher for NatsPublisher {
@@ -129,25 +147,46 @@ impl JobPublisher for NatsPublisher {
 
 // --- in-memory fakes (unit tests) ---
 
-/// In-memory [`StateStore`] with the same CAS semantics as the KV impl.
+/// In-memory [`StateStore`] with the same CAS *semantics* as the KV impl.
+///
+/// Revisions come from a **bucket-global** counter that every write to *any* key
+/// advances — mirroring NATS KV, where revision is the stream sequence, not a
+/// per-key counter. So a key's successive revisions are non-contiguous and never
+/// a predictable `n, n+1`. This is deliberate: it makes any coordinator code that
+/// does revision *arithmetic* (instead of round-tripping the opaque `u64`) fail
+/// here, where the real backend would also fail.
+#[derive(Default)]
+struct FakeState {
+    map: HashMap<String, (StateEntry, u64)>,
+    /// Bucket-global sequence (see [`FakeStateStore`]).
+    seq: u64,
+}
+
+impl FakeState {
+    fn write(&mut self, key: &str, entry: &StateEntry) -> u64 {
+        self.seq += 1;
+        self.map.insert(key.to_string(), (entry.clone(), self.seq));
+        self.seq
+    }
+}
+
 #[derive(Default, Clone)]
 pub struct FakeStateStore {
-    inner: Arc<Mutex<HashMap<String, (StateEntry, u64)>>>,
+    inner: Arc<Mutex<FakeState>>,
 }
 
 #[async_trait]
 impl StateStore for FakeStateStore {
     async fn get(&self, key: &str) -> Result<Option<(StateEntry, u64)>, StoreError> {
-        Ok(self.inner.lock().unwrap().get(key).cloned())
+        Ok(self.inner.lock().unwrap().map.get(key).cloned())
     }
 
     async fn create(&self, key: &str, entry: &StateEntry) -> Result<u64, StoreError> {
-        let mut g = self.inner.lock().unwrap();
-        if g.contains_key(key) {
+        let mut st = self.inner.lock().unwrap();
+        if st.map.contains_key(key) {
             return Err(StoreError::Conflict(key.to_string()));
         }
-        g.insert(key.to_string(), (entry.clone(), 1));
-        Ok(1)
+        Ok(st.write(key, entry))
     }
 
     async fn update(
@@ -156,22 +195,15 @@ impl StateStore for FakeStateStore {
         entry: &StateEntry,
         revision: u64,
     ) -> Result<u64, StoreError> {
-        let mut g = self.inner.lock().unwrap();
-        match g.get(key) {
-            Some((_, rev)) if *rev == revision => {
-                let next = revision + 1;
-                g.insert(key.to_string(), (entry.clone(), next));
-                Ok(next)
-            }
+        let mut st = self.inner.lock().unwrap();
+        match st.map.get(key) {
+            Some((_, rev)) if *rev == revision => Ok(st.write(key, entry)),
             _ => Err(StoreError::Conflict(key.to_string())),
         }
     }
 
     async fn put(&self, key: &str, entry: &StateEntry) -> Result<u64, StoreError> {
-        let mut g = self.inner.lock().unwrap();
-        let next = g.get(key).map_or(1, |(_, rev)| rev + 1);
-        g.insert(key.to_string(), (entry.clone(), next));
-        Ok(next)
+        Ok(self.inner.lock().unwrap().write(key, entry))
     }
 }
 
@@ -238,21 +270,35 @@ mod tests {
     #[tokio::test]
     async fn create_then_get_then_cas_update() {
         let s = FakeStateStore::default();
+        // Revisions are opaque tokens — assert behavior, not literal values.
         let rev = s
             .create("a.mkv", &entry(Status::Pending, "1:1"))
             .await
             .unwrap();
-        assert_eq!(rev, 1);
         let (got, r) = s.get("a.mkv").await.unwrap().unwrap();
         assert_eq!(got.status, Status::Pending);
-        assert_eq!(r, 1);
+        assert_eq!(r, rev, "get returns the create revision");
 
-        // CAS with the right revision succeeds and bumps it.
+        // CAS with the right revision succeeds and advances it.
         let rev2 = s
             .update("a.mkv", &entry(Status::InProgress, "1:1"), r)
             .await
             .unwrap();
-        assert_eq!(rev2, 2);
+        assert!(rev2 > r, "a successful write advances the revision");
+    }
+
+    #[tokio::test]
+    async fn revisions_are_bucket_global_and_non_contiguous() {
+        // Mirrors real NATS KV: a key's revisions are NOT n, n+1 — writes to
+        // other keys advance the shared sequence. Guards against arithmetic.
+        let s = FakeStateStore::default();
+        let a1 = s.create("a", &entry(Status::Pending, "v")).await.unwrap();
+        let _b = s.create("b", &entry(Status::Pending, "v")).await.unwrap();
+        let a2 = s.update("a", &entry(Status::Done, "v"), a1).await.unwrap();
+        assert!(
+            a2 > a1 + 1,
+            "b's write must sit between a's revisions: {a1} -> {a2}"
+        );
     }
 
     #[tokio::test]

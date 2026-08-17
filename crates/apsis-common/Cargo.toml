@@ -17,9 +17,13 @@ figment = { version = "0.10", features = ["toml", "env"] }
 garde = { version = "0.23", features = ["derive"] }
 humantime-serde = "1"
 async-nats = "0.42"
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"] }
 async-trait = "0.1"
 bytes = "1"
+
+[dev-dependencies]
+# Only the tests drive an async runtime (#[tokio::test]); the library itself uses
+# std::sync primitives and awaits async-nats futures without spawning.
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 
 [lints]
 workspace = true

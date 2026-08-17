@@ -8,8 +8,12 @@ pub const DEFAULT_VIDEO_EXTENSIONS: &[&str] = &[
     "mkv", "mp4", "avi", "mov", "m4v", "ts", "m2ts", "wmv", "flv", "webm", "mpg", "mpeg",
 ];
 
-/// The change token `"mtime_secs:size"` used to detect drift (FR-005). A changed
+/// The change token `"mtime_nanos:size"` used to detect drift (FR-005). A changed
 /// token supersedes any prior state for the path.
+///
+/// Uses **nanosecond** mtime precision: a same-second, same-size rewrite (e.g. a
+/// container re-mux) would be missed at second granularity, so the sub-second
+/// component is kept.
 ///
 /// # Errors
 /// Returns the underlying I/O error if the file cannot be `stat`'d.
@@ -18,7 +22,7 @@ pub fn version_token(path: &Path) -> std::io::Result<String> {
     let mtime = meta
         .modified()?
         .duration_since(UNIX_EPOCH)
-        .map_or(0, |d| d.as_secs()); // pre-epoch mtimes are absurd; treat as 0
+        .map_or(0, |d| d.as_nanos()); // pre-epoch mtimes are absurd; treat as 0
     Ok(format!("{mtime}:{}", meta.len()))
 }
 

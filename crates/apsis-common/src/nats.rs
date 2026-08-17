@@ -31,10 +31,20 @@ pub struct ConsumerTuning {
 
 impl Default for ConsumerTuning {
     fn default() -> Self {
+        Self::for_concurrency(1)
+    }
+}
+
+impl ConsumerTuning {
+    /// Default tuning with `max_ack_pending` mirroring the worker's concurrency
+    /// (contract §consumer — the broker-side bound of the local semaphore). Use
+    /// this so the two can never silently drift.
+    #[must_use]
+    pub fn for_concurrency(concurrency: u32) -> Self {
         Self {
             ack_wait: Duration::from_mins(30),
             max_deliver: 4,
-            max_ack_pending: 1,
+            max_ack_pending: i64::from(concurrency.max(1)),
             backoff: vec![
                 Duration::from_mins(1),
                 Duration::from_mins(5),
@@ -69,6 +79,12 @@ fn pull_config(tuning: &ConsumerTuning) -> pull::Config {
 
 /// Create the stream, pull consumer, and KV bucket if absent; return the KV store.
 ///
+/// **Cold-start provisioning only.** On a *warm* NATS whose stream/consumer/bucket
+/// already exist with a *different* config, `get_or_create_*` returns the existing
+/// object unchanged — this does **not** reconcile drift back to the git config.
+/// Changing tuning after first provisioning currently requires deleting the object
+/// (or a future `update_stream`/`update_consumer` reconcile pass).
+///
 /// # Errors
 /// Any `JetStream` provisioning failure.
 pub async fn ensure_topology(
@@ -82,25 +98,35 @@ pub async fn ensure_topology(
             retention: RetentionPolicy::WorkQueue,
             storage: StorageType::File,
             discard: DiscardPolicy::Old,
+            max_age: Duration::ZERO, // jobs persist until acked (crash-safe)
             ..Default::default()
         })
         .await?;
     stream
         .get_or_create_consumer(CONSUMER_NAME, pull_config(tuning))
         .await?;
-    let kv = match ctx.get_key_value(KV_BUCKET).await {
-        Ok(store) => store,
-        Err(_) => {
-            ctx.create_key_value(kv::Config {
-                bucket: KV_BUCKET.to_string(),
-                history: 1,
-                storage: StorageType::File,
-                ..Default::default()
-            })
-            .await?
-        }
-    };
-    Ok(kv)
+    ensure_kv(ctx).await
+}
+
+/// Idempotently obtain the KV bucket. `get`-first so a transient error is never
+/// mistaken for "absent" (which would spuriously try to create); if `create`
+/// races an existing bucket, `get` again rather than surfacing "already in use".
+async fn ensure_kv(ctx: &Context) -> Result<kv::Store, async_nats::Error> {
+    if let Ok(store) = ctx.get_key_value(KV_BUCKET).await {
+        return Ok(store);
+    }
+    match ctx
+        .create_key_value(kv::Config {
+            bucket: KV_BUCKET.to_string(),
+            history: 1,
+            storage: StorageType::File,
+            ..Default::default()
+        })
+        .await
+    {
+        Ok(store) => Ok(store),
+        Err(_) => Ok(ctx.get_key_value(KV_BUCKET).await?),
+    }
 }
 
 /// Bind the worker's pull consumer (idempotent; provisions if missing).

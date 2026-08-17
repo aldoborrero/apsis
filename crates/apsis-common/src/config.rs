@@ -1,7 +1,11 @@
-//! Declarative config (TOML in git), loaded via figment (file + env) and
-//! validated with garde. Loading is **fail-fast**: an invalid config yields an
-//! error and the binary refuses to start, so the last-good deployment keeps
-//! running (FR-012).
+//! Declarative config (TOML in git), loaded via figment and validated with
+//! garde. Loading is **fail-fast**: an invalid config yields an error and the
+//! binary refuses to start, so the last-good deployment keeps running (FR-012).
+//!
+//! Env layering is intentionally *not* used: figment's `Env::prefixed` emits the
+//! whole `APSIS_*` namespace as top-level keys, which (a) can't reach nested
+//! fields and (b) makes an unrelated `APSIS_*` var trip `deny_unknown_fields` and
+//! refuse startup. Config is TOML files in git; overrides edit the file.
 //!
 //! `scheduler.toml` drives the coordinator; `worker.toml` the worker. Profiles
 //! are `apsis_engine::Profile` — the engine self-validates them at deserialize,
@@ -13,7 +17,7 @@ use std::time::Duration;
 
 use apsis_engine::{HardwareConfig, Profile};
 use figment::Figment;
-use figment::providers::{Env, Format, Toml};
+use figment::providers::{Format, Toml};
 use garde::Validate;
 use serde::Deserialize;
 use thiserror::Error;
@@ -31,6 +35,12 @@ pub enum ConfigError {
     UnknownProfile { library: String, profile: String },
     #[error("at least one {0} must be configured")]
     Empty(&'static str),
+    #[error("duplicate library name {0:?}")]
+    DuplicateLibrary(String),
+    #[error("library {library:?} path {path:?} must be absolute")]
+    RelativePath { library: String, path: String },
+    #[error("verify.max_size_ratio must be finite and >= 1.0, got {0}")]
+    BadRatio(f64),
 }
 
 impl From<figment::Error> for ConfigError {
@@ -142,6 +152,8 @@ pub struct BackendConfig {
 pub struct VerifyConfig {
     #[serde(with = "humantime_serde", default = "d_dur_tol")]
     pub duration_tolerance: Duration,
+    /// Output must not exceed `input * max_size_ratio`. Validated finite and ≥ 1.0
+    /// in `worker_from` — garde's `range` can't reject `NaN` (`NaN < 1.0` is false).
     #[serde(default = "d_max_size_ratio")]
     pub max_size_ratio: f64,
     #[serde(default)]
@@ -193,7 +205,18 @@ fn scheduler_from(fig: &Figment) -> Result<SchedulerConfig, ConfigError> {
     if cfg.libraries.is_empty() {
         return Err(ConfigError::Empty("library"));
     }
+    let mut seen = std::collections::HashSet::new();
     for lib in &cfg.libraries {
+        if !seen.insert(lib.name.as_str()) {
+            return Err(ConfigError::DuplicateLibrary(lib.name.clone()));
+        }
+        // Paths are absolute prefixes (profile match + worker path_map depend on it).
+        if !std::path::Path::new(&lib.path).is_absolute() {
+            return Err(ConfigError::RelativePath {
+                library: lib.name.clone(),
+                path: lib.path.clone(),
+            });
+        }
         if !cfg.profiles.contains_key(&lib.profile) {
             return Err(ConfigError::UnknownProfile {
                 library: lib.name.clone(),
@@ -210,6 +233,10 @@ fn worker_from(fig: &Figment) -> Result<WorkerConfig, ConfigError> {
     if cfg.backends.is_empty() {
         return Err(ConfigError::Empty("backend"));
     }
+    let ratio = cfg.verify.max_size_ratio;
+    if !ratio.is_finite() || ratio < 1.0 {
+        return Err(ConfigError::BadRatio(ratio));
+    }
     Ok(cfg)
 }
 
@@ -218,11 +245,7 @@ fn worker_from(fig: &Figment) -> Result<WorkerConfig, ConfigError> {
 /// # Errors
 /// Parse, validation, empty-libraries, or unknown-profile failures (fail-fast).
 pub fn load_scheduler(path: &Path) -> Result<SchedulerConfig, ConfigError> {
-    scheduler_from(
-        &Figment::new()
-            .merge(Toml::file(path))
-            .merge(Env::prefixed("APSIS_")),
-    )
+    scheduler_from(&Figment::new().merge(Toml::file(path)))
 }
 
 /// Load + validate `worker.toml` (with `APSIS_`-prefixed env overrides).
@@ -230,11 +253,7 @@ pub fn load_scheduler(path: &Path) -> Result<SchedulerConfig, ConfigError> {
 /// # Errors
 /// Parse, validation, or empty-backends failures (fail-fast).
 pub fn load_worker(path: &Path) -> Result<WorkerConfig, ConfigError> {
-    worker_from(
-        &Figment::new()
-            .merge(Toml::file(path))
-            .merge(Env::prefixed("APSIS_")),
-    )
+    worker_from(&Figment::new().merge(Toml::file(path)))
 }
 
 #[cfg(test)]
@@ -333,5 +352,57 @@ mod tests {
     fn worker_requires_a_backend() {
         let err = worker_from(&Figment::new().merge(Toml::string("concurrency = 1"))).unwrap_err();
         assert!(matches!(err, ConfigError::Empty("backend")), "{err}");
+    }
+
+    #[test]
+    fn relative_library_path_rejected() {
+        let toml = r#"
+            [[library]]
+            name = "tv"
+            path = "relative/tv"
+            profile = "tv"
+            [profiles.tv.video]
+            codec = "hevc"
+            [profiles.tv.audio]
+            [profiles.tv.subtitles]
+            [profiles.tv.output]
+        "#;
+        let err = scheduler_from(&Figment::new().merge(Toml::string(toml))).unwrap_err();
+        assert!(matches!(err, ConfigError::RelativePath { .. }), "{err}");
+    }
+
+    #[test]
+    fn duplicate_library_name_rejected() {
+        let toml = r#"
+            [[library]]
+            name = "tv"
+            path = "/hdd/tv"
+            profile = "tv"
+            [[library]]
+            name = "tv"
+            path = "/hdd/tv2"
+            profile = "tv"
+            [profiles.tv.video]
+            codec = "hevc"
+            [profiles.tv.audio]
+            [profiles.tv.subtitles]
+            [profiles.tv.output]
+        "#;
+        let err = scheduler_from(&Figment::new().merge(Toml::string(toml))).unwrap_err();
+        assert!(matches!(err, ConfigError::DuplicateLibrary(_)), "{err}");
+    }
+
+    #[test]
+    fn worker_rejects_nan_inf_and_small_size_ratio() {
+        for bad in ["nan", "inf", "0.5", "-3.0"] {
+            let toml = format!(
+                "concurrency = 1\n[verify]\nmax_size_ratio = {bad}\n[[backend]]\nkind = \"cpu\"\n"
+            );
+            let err = worker_from(&Figment::new().merge(Toml::string(&toml))).unwrap_err();
+            assert!(
+                matches!(err, ConfigError::BadRatio(_)),
+                "ratio {bad} should be rejected, got {err}"
+            );
+        }
     }
 }

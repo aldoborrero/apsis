@@ -1,9 +1,9 @@
 //! apsis-common — shared infrastructure for the coordinator and worker.
 //!
-//! Wire schemas ([`schema`]), filesystem helpers ([`fsutil`]), and path
-//! translation ([`pathmap`]) are implemented. Config (figment/garde) and the
-//! NATS wiring (`JetStream` topology + the `Queue`/`StateStore` traits) land in
-//! the next Foundational increments (spec 002).
+//! Wire schemas ([`schema`]), config ([`config`], figment + garde), filesystem
+//! helpers ([`fsutil`]), path translation ([`pathmap`]), the `JetStream` topology
+//! ([`nats`]), and the [`StateStore`]/[`JobPublisher`] abstractions with NATS
+//! impls + in-memory fakes ([`store`]) are all implemented (spec 002 foundation).
 
 pub mod config;
 pub mod fsutil;

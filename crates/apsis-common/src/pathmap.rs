@@ -15,6 +15,9 @@ pub struct PathMap {
 /// Does `key` match `path` at a segment boundary (whole path or `key/...`)?
 fn boundary_match<'a>(key: &str, path: &'a str) -> Option<&'a str> {
     let key = key.trim_end_matches('/');
+    if key.is_empty() {
+        return None; // an empty or `/`-only key would match everything — ignore it
+    }
     match path.strip_prefix(key) {
         Some(rest) if rest.is_empty() || rest.starts_with('/') => Some(rest),
         _ => None,

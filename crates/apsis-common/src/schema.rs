@@ -3,6 +3,11 @@
 //! See `specs/002-single-node-transcode/data-model.md` and
 //! `contracts/nats-protocol.md` — these types ARE the contract. Timestamps are
 //! RFC3339 UTC; ids are ULIDs (sortable).
+//!
+//! Wire types deliberately do **not** use `deny_unknown_fields`: they cross a
+//! version boundary (coordinator ↔ worker), and spec 003 evolves them
+//! additively. An older consumer must tolerate a field a newer producer adds
+//! (rolling upgrade), so unknown fields are ignored, not rejected.
 
 use apsis_engine::FilePlan;
 use serde::{Deserialize, Serialize};
@@ -34,7 +39,6 @@ pub enum Outcome {
 /// worker materializes the command for its own backend. Media stays on the shared
 /// filesystem; the job is metadata only.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct Job {
     pub id: Ulid,
     /// Coordinator-space absolute path (worker applies its `path_map`).
@@ -50,7 +54,6 @@ pub struct Job {
 
 /// KV `transcode_state` value, keyed by the file's coordinator-space path.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct StateEntry {
     pub status: Status,
     /// The `"mtime:size"` this state refers to; a newer token supersedes it.
@@ -66,7 +69,6 @@ pub struct StateEntry {
 
 /// Worker → `jobs.result`; folded into KV and metrics.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct TranscodeResult {
     pub job_id: Ulid,
     pub path: String,
