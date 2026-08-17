@@ -36,7 +36,7 @@ Everything below blocks all user stories.
 - [X] T004 [P] Define wire schemas in `crates/apsis-common/src/schema.rs`: `Job`,
   `StateEntry` (+ `Status` enum), `TranscodeResult` (+ `Outcome`), with serde + `schemars`;
   `Job.plan` is `apsis_engine::FilePlan`. Match [data-model.md](./data-model.md) exactly.
-- [ ] T005 [P] Define config in `crates/apsis-common/src/config.rs`: `SchedulerConfig`
+- [X] T005 [P] Define config in `crates/apsis-common/src/config.rs`: `SchedulerConfig`
   (libraries + `[profiles]` = `apsis_engine::Profile` + `[reconcile]`), `WorkerConfig`
   (concurrency, `path_map`, ffmpeg/ffprobe paths, `[verify]`, `[[backend]]`), loaded via
   `figment` (file+env) with `garde` validation; **fail-fast** on invalid (FR-012).

@@ -5,10 +5,15 @@
 //! NATS wiring (`JetStream` topology + the `Queue`/`StateStore` traits) land in
 //! the next Foundational increments (spec 002).
 
+pub mod config;
 pub mod fsutil;
 pub mod pathmap;
 pub mod schema;
 
+pub use config::{
+    BackendConfig, BackendKind, ConfigError, Library, Reconcile, SchedulerConfig, VerifyConfig,
+    WorkerConfig, load_scheduler, load_worker,
+};
 pub use fsutil::{DEFAULT_VIDEO_EXTENSIONS, is_video, version_token};
 pub use pathmap::PathMap;
 pub use schema::{Job, Outcome, StateEntry, Status, TranscodeResult};

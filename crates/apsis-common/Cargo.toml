@@ -13,6 +13,9 @@ serde_json = "1"
 thiserror = "2"
 ulid = { version = "1", features = ["serde"] }
 time = { version = "0.3", features = ["serde-well-known"] }
+figment = { version = "0.10", features = ["toml", "env"] }
+garde = { version = "0.23", features = ["derive"] }
+humantime-serde = "1"
 
 [lints]
 workspace = true
