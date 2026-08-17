@@ -18,9 +18,15 @@ use apsis_common::{
     load_scheduler, version_token,
 };
 
-use crate::discover::discover_videos;
+use std::time::Duration;
+
+use crate::discover::{discover_videos, sweep_temps};
 use crate::profile_match::match_library;
 use crate::reconcile::{FfprobeProber, Reconciler};
+
+/// Orphan temps older than this are crash leftovers, safe to sweep (well beyond
+/// any plausible single-file transcode).
+const TEMP_ORPHAN_AGE: Duration = Duration::from_hours(6);
 
 type Fatal = Box<dyn std::error::Error + Send + Sync>;
 type Coordinator = Reconciler<KvStateStore, NatsPublisher, FfprobeProber>;
@@ -47,6 +53,18 @@ async fn serve() -> Result<(), Fatal> {
     let (_client, ctx) = connect(&nats_url).await?;
     let tuning = ConsumerTuning::for_concurrency(1);
     let kv = ensure_topology(&ctx, &tuning).await?;
+
+    // Startup: sweep crash-orphaned temps (FR-008) before the first reconcile.
+    for lib in &cfg.libraries {
+        let swept = sweep_temps(Path::new(&lib.path), TEMP_ORPHAN_AGE);
+        if swept > 0 {
+            eprintln!(
+                "apsis-coordinator: swept {swept} orphan temp(s) in {}",
+                lib.path
+            );
+        }
+    }
+
     let reconciler = Reconciler {
         store: KvStateStore::new(kv),
         publisher: NatsPublisher::new(ctx),

@@ -89,18 +89,55 @@ impl Worker {
         let mut messages = consumer.messages().await?;
         while let Some(msg) = messages.next().await {
             let msg = msg?;
-            match serde_json::from_slice::<Job>(&msg.payload) {
-                Ok(job) => match self.process(&job).await {
-                    Ok(_) => msg.ack().await?, // terminal (done or recorded-failed) → drain
-                    Err(e) => {
-                        eprintln!("apsis-worker: job {} retriable error: {e}", job.id);
-                        msg.ack_with(AckKind::Nak(None)).await?; // redeliver
-                    }
-                },
-                Err(e) => {
-                    // Undecodable payload will never decode — terminate it.
-                    eprintln!("apsis-worker: undecodable job dropped: {e}");
+            let Ok(job) = serde_json::from_slice::<Job>(&msg.payload) else {
+                eprintln!("apsis-worker: undecodable job dropped");
+                msg.ack().await?; // will never decode → drain
+                continue;
+            };
+            // 1-based delivery attempt; the last one dead-letters on failure.
+            let attempt = msg.info().map_or(1, |i| i.delivered.max(1));
+            let max_deliver = tuning.max_deliver.max(1);
+
+            // Extend the ack deadline while a long transcode runs (T025): heartbeat
+            // Progress until process() finishes, so NATS doesn't redeliver mid-encode.
+            let outcome = {
+                let hb = heartbeat(&msg, tuning.ack_wait);
+                tokio::pin!(hb);
+                tokio::select! {
+                    r = self.process(&job) => r,
+                    () = &mut hb => Err("heartbeat ended (connection lost) mid-process".into()),
+                }
+            };
+
+            match outcome {
+                Ok(_) => msg.ack().await?, // terminal (done or recorded-failed) → drain
+                Err(e) if attempt >= max_deliver => {
+                    // Dead-letter (FR-009): record Failed@version so the version gate
+                    // suppresses re-queue until the file changes, then drain.
+                    eprintln!(
+                        "apsis-worker: job {} dead-lettered after {attempt}: {e}",
+                        job.id
+                    );
+                    let _ = self
+                        .finish(
+                            &job,
+                            &job.path,
+                            Outcome::Failed,
+                            false,
+                            0,
+                            0,
+                            0.0,
+                            Some(e.to_string()),
+                        )
+                        .await;
                     msg.ack().await?;
+                }
+                Err(e) => {
+                    eprintln!(
+                        "apsis-worker: job {} retriable ({attempt}/{max_deliver}): {e}",
+                        job.id
+                    );
+                    msg.ack_with(AckKind::Nak(None)).await?; // redeliver
                 }
             }
         }
@@ -293,6 +330,18 @@ impl Worker {
             used_fallback,
             updated_at: OffsetDateTime::now_utc(),
             last_error,
+        }
+    }
+}
+
+/// Emit `AckKind::Progress` every `ack_wait/2` to keep the lease alive during a
+/// long transcode. Loops until dropped (process finished) or the connection drops.
+async fn heartbeat(msg: &async_nats::jetstream::Message, ack_wait: std::time::Duration) {
+    let period = (ack_wait / 2).max(std::time::Duration::from_secs(1));
+    loop {
+        tokio::time::sleep(period).await;
+        if msg.ack_with(AckKind::Progress).await.is_err() {
+            break; // connection gone — let the select arm surface a retriable error
         }
     }
 }

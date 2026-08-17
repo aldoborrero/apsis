@@ -130,11 +130,11 @@ only non-compliant files queued.
 file is capped then suppressed. **Independent test**: kill the worker mid-transcode → original
 intact + redelivered; an unencodable file → `Failed` after `max_deliver`.
 
-- [ ] T025 [US3] Long-transcode lease: heartbeat `AckWait` (`working`/in-progress) so a
+- [X] T025 [US3] Long-transcode lease: heartbeat `AckWait` (`working`/in-progress) so a
   legitimately long encode isn't redelivered mid-run (contract §delivery).
-- [ ] T026 [US3] Dead-letter handling: on `MaxDeliver`/`term`, write `Failed@version` +
+- [X] T026 [US3] Dead-letter handling: on `MaxDeliver`/`term`, write `Failed@version` +
   `last_error` to KV and suppress re-queue until `mtime:size` changes (FR-009).
-- [ ] T027 [US3] Startup sweep: discard orphan `.apsis-tmp-*` files from a prior crash before
+- [X] T027 [US3] Startup sweep: discard orphan `.apsis-tmp-*` files from a prior crash before
   reconciling (FR-008 partial-output cleanup).
 
 ### Tests (gated on a real `nats-server`, `APSIS_TEST_NATS`)
