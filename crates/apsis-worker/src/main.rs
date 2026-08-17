@@ -6,6 +6,7 @@
 #![allow(dead_code)]
 
 mod replace;
+mod verify;
 
 fn main() {
     eprintln!("apsis-worker: not implemented yet (see specs/002-single-node-transcode)");
