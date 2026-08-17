@@ -4,8 +4,10 @@
 #   process-compose up  # starts a JetStream NATS on :4222 (monitoring :8222)
 #
 # NATS is the durable substrate the coordinator/worker use (job stream + KV +
-# consumer). The apsis binaries are staged here but disabled until implemented
-# (US1/US2) — enable them by removing `disabled: true`. Integration tests read
+# consumer). The apsis binaries are implemented; they stay disabled here because
+# they need a real library path + config — enable them once you have a
+# scheduler.toml / worker.toml (see docs/apsis-operations.md) and set
+# APSIS_SCHEDULER_CONFIG / APSIS_WORKER_CONFIG. Integration tests read
 # APSIS_TEST_NATS (set by the devshell to this server).
 version: "0.5"
 

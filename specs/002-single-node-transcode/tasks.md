@@ -168,13 +168,13 @@ intact + redelivered; an unencodable file → `Failed` after `max_deliver`.
 
 ## Phase 7: Polish & cross-cutting
 
-- [ ] T033 [P] Config fail-fast end-to-end: an invalid `scheduler.toml`/`worker.toml` makes
+- [X] T033 [P] Config fail-fast end-to-end: an invalid `scheduler.toml`/`worker.toml` makes
   the binary refuse to start with a clear error; add a rejects-bad-config test (FR-012).
-- [ ] T034 [P] `cargo clippy --workspace --all-targets -- -D warnings` + `cargo fmt` clean
+- [X] T034 [P] `cargo clippy --workspace --all-targets -- -D warnings` + `cargo fmt` clean
   in the nix devshell; no orchestration deps leak into `apsis-engine`.
 - [ ] T035 [P] Sample-clip test helpers (`testsrc`/`sine` generators) shared across the
   worker tests (quickstart §test locally).
-- [ ] T036 [P] Update `docs/` (CHANGELOG + a short `docs/services/apsis.md` runbook) and
+- [X] T036 [P] Update `docs/` (CHANGELOG + a short `docs/services/apsis.md` runbook) and
   validate the `quickstart.md` commands against the built binaries.
 
 ---
