@@ -73,7 +73,7 @@ sample clip → the file is compliant + intact and the original is atomically re
   `apsis_engine::VaapiBackend`, run through `tokio::process` to a temp
   `.apsis-tmp-<ulid>` in the **source directory**, parse `-progress pipe:1` into progress
   (FR-007 temp-on-same-fs).
-- [ ] T013 [US1] `fallback.rs`: on VAAPI non-zero exit, retry once with
+- [X] T013 [US1] `fallback.rs`: on VAAPI non-zero exit, retry once with
   `apsis_engine::CpuBackend`; record `used_fallback` (FR-006).
 - [ ] T014 [US1] `verify.rs`: ffprobe the temp — expected streams present, duration within
   tolerance, tail-packet not-truncated, size sane (research D3); returns a typed verdict.

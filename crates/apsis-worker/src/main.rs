@@ -5,6 +5,7 @@
 //! from `main`, hence the crate-level `dead_code` allow below.
 #![allow(dead_code)]
 
+mod fallback;
 mod replace;
 mod run;
 mod verify;
