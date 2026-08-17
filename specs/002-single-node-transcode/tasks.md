@@ -104,11 +104,11 @@ only non-compliant files queued.
 - [ ] T019 [US2] Coordinator skeleton in `crates/apsis-coordinator/src/main.rs`: load
   `SchedulerConfig`, connect NATS, `ensure_topology`, run the reconcile loop on
   `scan_interval`.
-- [ ] T020 [P] [US2] `profile_match.rs`: longest-matching `Library.path` → profile (FR-003);
+- [X] T020 [P] [US2] `profile_match.rs`: longest-matching `Library.path` → profile (FR-003);
   unit-tested with nested/overlapping libraries.
 - [ ] T021 [P] [US2] `discover.rs`: `notify` inotify watch ⊎ periodic walk, `is_video`
   filter, **debounce** on unstable `mtime:size` (FR-001/002); both feed one reconcile body.
-- [ ] T022 [US2] `reconcile.rs`: the one-pass algorithm (research/design §7) — version-cache
+- [X] T022 [US2] `reconcile.rs`: the one-pass algorithm (research/design §7) — version-cache
   gate (skip unchanged, no probe) → `apsis_engine::plan` → `should_skip` ? KV `Done` : KV
   `Pending` CAS + publish `Job` (FR-004/005). Needs T020, T021, and common T006/T007.
 - [ ] T023 [US2] Fold `jobs.result` back into KV `Done`/`Failed@version` in the coordinator
@@ -116,7 +116,7 @@ only non-compliant files queued.
 
 ### Tests
 
-- [ ] T024 [P] [US2] `crates/apsis-coordinator/tests/idempotent.rs` (in-memory fakes): a
+- [X] T024 [P] [US2] `crates/apsis-coordinator/tests/idempotent.rs` (in-memory fakes): a
   compliant library → 0 jobs; running twice with no change → 0 both times; an unchanged file
   is **not** re-probed (assert the engine/probe is not called) (SC-002, FR-005).
 
