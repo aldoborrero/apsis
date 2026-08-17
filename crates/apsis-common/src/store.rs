@@ -166,6 +166,28 @@ impl JobPublisher for NatsPublisher {
     }
 }
 
+/// Publish a [`crate::schema::TranscodeResult`] to the result subject — a
+/// fire-and-forget **core** event (not in the work stream) the coordinator folds
+/// into KV + metrics.
+///
+/// # Errors
+/// Serialization or publish/flush failure.
+pub async fn publish_result(
+    client: &async_nats::Client,
+    result: &crate::schema::TranscodeResult,
+) -> Result<(), StoreError> {
+    let bytes = to_bytes(result)?;
+    client
+        .publish(crate::nats::SUBJECT_RESULT, bytes)
+        .await
+        .map_err(|e| StoreError::Backend(e.into()))?;
+    client
+        .flush()
+        .await
+        .map_err(|e| StoreError::Backend(e.into()))?;
+    Ok(())
+}
+
 // --- in-memory fakes (unit tests) ---
 
 /// In-memory [`StateStore`] with the same CAS *semantics* as the KV impl.
@@ -386,6 +408,10 @@ mod tests {
                     "video":{"source_index":null,"source_codec":null,"target_codec":"hevc","action":"unsupported"},
                     "audio":[],"subtitles":[],
                     "reasons":[{"code":"no_video_stream","message":"no video stream present","scope":"video"}]}"#,
+            )
+            .unwrap(),
+            profile_config: serde_json::from_str(
+                r#"{"video":{"codec":"hevc"},"audio":{},"subtitles":{},"output":{}}"#,
             )
             .unwrap(),
             enqueued_at: OffsetDateTime::UNIX_EPOCH,

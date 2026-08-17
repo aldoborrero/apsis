@@ -25,7 +25,6 @@ pub(crate) enum RunError {
 pub(crate) struct RunOutcome {
     pub temp: PathBuf,
     pub success: bool,
-    pub exit_code: Option<i32>,
     /// Last few KiB of stderr, for diagnostics on failure.
     pub stderr_tail: String,
 }
@@ -92,7 +91,6 @@ pub(crate) async fn run(
     Ok(RunOutcome {
         temp,
         success: status.success(),
-        exit_code: status.code(),
         stderr_tail,
     })
 }

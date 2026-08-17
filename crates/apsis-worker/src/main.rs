@@ -1,15 +1,45 @@
 //! apsis-worker — pull a job, run ffmpeg, verify, atomically replace (spec 002 US1).
 //!
-//! Under construction: the run/verify/pull-loop modules land incrementally; until
-//! the pull loop wires them together (T016), some module fns are not yet called
-//! from `main`, hence the crate-level `dead_code` allow below.
-#![allow(dead_code)]
+//! Config from `APSIS_WORKER_CONFIG` (default `worker.toml`); NATS from `NATS_URL`
+//! (default the process-compose local server). Sequential (AMD-VCN concurrency 1);
+//! `max_ack_pending` bounds in-flight jobs broker-side.
 
 mod fallback;
 mod replace;
 mod run;
 mod verify;
+mod worker;
 
-fn main() {
-    eprintln!("apsis-worker: not implemented yet (see specs/002-single-node-transcode)");
+use std::path::Path;
+use std::process::ExitCode;
+
+use apsis_common::{ConsumerTuning, KvStateStore, connect, ensure_topology, load_worker};
+
+use crate::worker::Worker;
+
+type Fatal = Box<dyn std::error::Error + Send + Sync>;
+
+#[tokio::main]
+async fn main() -> ExitCode {
+    match serve().await {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(e) => {
+            eprintln!("apsis-worker: fatal: {e}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+async fn serve() -> Result<(), Fatal> {
+    let cfg_path =
+        std::env::var("APSIS_WORKER_CONFIG").unwrap_or_else(|_| "worker.toml".to_string());
+    let nats_url =
+        std::env::var("NATS_URL").unwrap_or_else(|_| "nats://127.0.0.1:4222".to_string());
+
+    let cfg = load_worker(Path::new(&cfg_path))?;
+    let (client, ctx) = connect(&nats_url).await?;
+    let tuning = ConsumerTuning::for_concurrency(cfg.concurrency);
+    let kv = ensure_topology(&ctx, &tuning).await?;
+    let worker = Worker::new(client, ctx, KvStateStore::new(kv), &cfg);
+    worker.run(&tuning).await
 }

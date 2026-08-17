@@ -66,7 +66,7 @@ sample clip → the file is compliant + intact and the original is atomically re
 
 ### Implementation — `apsis-worker`
 
-- [ ] T011 [US1] Worker skeleton in `crates/apsis-worker/src/main.rs`: load `WorkerConfig`,
+- [X] T011 [US1] Worker skeleton in `crates/apsis-worker/src/main.rs`: load `WorkerConfig`,
   connect NATS, `ensure_topology`, bind the `worker-local` pull consumer, `Semaphore` bound
   to `concurrency` (FR-010).
 - [X] T012 [US1] `run.rs`: build the ffmpeg command from `Job.plan` via
@@ -75,12 +75,12 @@ sample clip → the file is compliant + intact and the original is atomically re
   (FR-007 temp-on-same-fs).
 - [X] T013 [US1] `fallback.rs`: on VAAPI non-zero exit, retry once with
   `apsis_engine::CpuBackend`; record `used_fallback` (FR-006).
-- [ ] T014 [US1] `verify.rs`: ffprobe the temp — expected streams present, duration within
+- [X] T014 [US1] `verify.rs`: ffprobe the temp — expected streams present, duration within
   tolerance, tail-packet not-truncated, size sane (research D3); returns a typed verdict.
 - [X] T015 [US1] `replace.rs`: on verify pass, `fsync` temp + dir, atomic `rename`
   (handle extension change: new path then unlink old original), restore `stat(2)`
   (owner/mode/mtime); on any failure/crash, unlink temp — original untouched (FR-007/008).
-- [ ] T016 [US1] Wire the pull loop: pull → `InProgress` KV CAS → run → fallback → verify →
+- [X] T016 [US1] Wire the pull loop: pull → `InProgress` KV CAS → run → fallback → verify →
   replace → `ack` + publish `TranscodeResult`; verify/terminal fail → discard temp +
   `nak`/`term` (contract §delivery).
 

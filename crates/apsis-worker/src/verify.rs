@@ -6,9 +6,54 @@
 //! [`check`] is the pure decision over already-probed data; the ffprobe execution
 //! that feeds it lands with the run loop.
 
+use std::path::Path;
+
 use apsis_common::config::VerifyConfig;
-use apsis_engine::{FilePlan, Probe};
+use apsis_engine::{FilePlan, Probe, parse_probe};
 use thiserror::Error;
+use tokio::process::Command;
+
+/// ffprobe `path` → (parsed streams, `format.duration` in seconds if present).
+///
+/// # Errors
+/// If ffprobe can't be spawned, exits non-zero, or its JSON can't be parsed.
+pub(crate) async fn probe_output(
+    ffprobe: &Path,
+    path: &Path,
+) -> std::io::Result<(Probe, Option<f64>)> {
+    let out = Command::new(ffprobe)
+        .args([
+            "-v",
+            "quiet",
+            "-print_format",
+            "json",
+            "-show_streams",
+            "-show_format",
+        ])
+        .arg(path)
+        .output()
+        .await?;
+    if !out.status.success() {
+        return Err(std::io::Error::other("ffprobe exited non-zero"));
+    }
+    let json = String::from_utf8_lossy(&out.stdout);
+    let probe = parse_probe(&json).map_err(|e| std::io::Error::other(e.to_string()))?;
+    let duration = serde_json::from_str::<FormatWrap>(&json)
+        .ok()
+        .and_then(|w| w.format)
+        .and_then(|f| f.duration)
+        .and_then(|d| d.parse::<f64>().ok());
+    Ok((probe, duration))
+}
+
+#[derive(serde::Deserialize)]
+struct FormatWrap {
+    format: Option<Fmt>,
+}
+#[derive(serde::Deserialize)]
+struct Fmt {
+    duration: Option<String>,
+}
 
 #[derive(Debug, Error, PartialEq)]
 pub(crate) enum VerifyFailure {

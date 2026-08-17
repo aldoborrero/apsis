@@ -54,13 +54,15 @@ impl ConsumerTuning {
     }
 }
 
-/// Connect to NATS and return a `JetStream` context.
+/// Connect to NATS; return the core client (for fire-and-forget result events)
+/// and a `JetStream` context (for the stream/KV/consumer).
 ///
 /// # Errors
 /// Connection failure.
-pub async fn connect(url: &str) -> Result<Context, async_nats::Error> {
+pub async fn connect(url: &str) -> Result<(async_nats::Client, Context), async_nats::Error> {
     let client = async_nats::connect(url).await?;
-    Ok(jetstream::new(client))
+    let ctx = jetstream::new(client.clone());
+    Ok((client, ctx))
 }
 
 fn pull_config(tuning: &ConsumerTuning) -> pull::Config {

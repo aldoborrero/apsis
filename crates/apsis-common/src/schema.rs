@@ -9,7 +9,7 @@
 //! additively. An older consumer must tolerate a field a newer producer adds
 //! (rolling upgrade), so unknown fields are ignored, not rejected.
 
-use apsis_engine::FilePlan;
+use apsis_engine::{FilePlan, Profile};
 use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
 use ulid::Ulid;
@@ -48,6 +48,10 @@ pub struct Job {
     /// Library's profile name (logging / future routing).
     pub profile: String,
     pub plan: FilePlan,
+    /// The full profile — the worker's ffmpeg command builder needs quality,
+    /// bitrate and encoder, which the plan doesn't carry. (A future refinement
+    /// could fold those into the plan and drop this.)
+    pub profile_config: Profile,
     #[serde(with = "time::serde::rfc3339")]
     pub enqueued_at: OffsetDateTime,
 }

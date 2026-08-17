@@ -22,5 +22,5 @@ pub use pathmap::PathMap;
 pub use schema::{Job, Outcome, StateEntry, Status, TranscodeResult};
 pub use store::{
     FakeJobPublisher, FakeStateStore, JobPublisher, KvStateStore, NatsPublisher, StateStore,
-    StoreError,
+    StoreError, publish_result,
 };

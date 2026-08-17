@@ -21,21 +21,21 @@ pub enum VideoCodec {
     Av1,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Encoder {
     Vaapi,
     Cpu,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Fallback {
     Cpu,
     None,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum HdrPolicy {
     Copy,
@@ -43,7 +43,7 @@ pub enum HdrPolicy {
     Encode,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct VideoConfig {
     pub codec: VideoCodec,
@@ -94,7 +94,7 @@ fn de_quality<'de, D: Deserializer<'de>>(d: D) -> Result<u8, D::Error> {
     Ok(v)
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct StereoConfig {
     #[serde(default = "d_aac")]
@@ -128,7 +128,7 @@ impl Default for StereoConfig {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct AudioConfig {
     #[serde(default)]
@@ -149,7 +149,7 @@ fn d_eng() -> String {
     "eng".to_string()
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SubtitleConfig {
     #[serde(default)]
@@ -162,7 +162,7 @@ pub struct SubtitleConfig {
     pub remove_commentary: bool,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct OutputConfig {
     #[serde(default = "d_mkv")]
@@ -175,7 +175,7 @@ fn d_mkv() -> String {
     "mkv".to_string()
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Profile {
     pub video: VideoConfig,
@@ -186,7 +186,7 @@ pub struct Profile {
 
 /// VAAPI hardware settings (port of `_engine/config.py`'s `VaapiConfig`). This is
 /// worker/host-level config the engine's command builder consumes.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct VaapiConfig {
     #[serde(default = "d_va_name")]
@@ -230,7 +230,7 @@ impl Default for VaapiConfig {
 }
 
 /// Hardware/environment config (port of `_engine/config.py`'s `HardwareConfig`).
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct HardwareConfig {
     #[serde(default = "d_hw_env")]
