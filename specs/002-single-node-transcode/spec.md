@@ -154,7 +154,13 @@ update as jobs run.
 
 ## Assumptions
 
-- Single host (rhea); media on a local/NFS path; no distribution in this phase.
-- A local durable queue (no external broker) is acceptable for Phase 1.
-- The engine (spec 001) is available (or the Python engine is shelled out as an interim).
+- Single host (rhea); media on a local/NFS path; **no distribution in this phase** (one
+  colocated VAAPI worker — the second host lands in spec 003).
+- **NATS JetStream (single-node) is the durable substrate from the start**: a stream for
+  the job queue, a KV bucket for per-file `transcode_state`, and a pull consumer whose
+  `AckWait`/`MaxDeliver` give the worker lease, crash-redelivery, and dead-lettering for
+  free. Chosen over an in-process/SQLite queue so spec 003 (distribution) is **additive**
+  — add a worker + subject routing, no substrate migration. State stays re-derivable by
+  rescan (constitution): losing NATS costs at most one re-probe pass, never a re-transcode.
+- The engine (spec 001) is available as the `apsis-engine` crate (plan + backends).
 - Runs alongside Unmanic (prod) on a separate **test** library during validation.
