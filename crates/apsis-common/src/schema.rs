@@ -69,7 +69,9 @@ pub struct StateEntry {
     /// The `"mtime:size"` this state refers to; a newer token supersedes it.
     pub version: String,
     pub job_id: Option<Ulid>,
-    /// Delivery attempts, for the retry limit (FR-009).
+    /// Reserved. The live retry count that drives dead-lettering (FR-009) is the
+    /// `JetStream` consumer's `delivered` count, not this field — it is only a
+    /// coarse hint written on state transitions, not read by the retry logic.
     pub attempts: u32,
     pub used_fallback: bool,
     #[serde(with = "time::serde::rfc3339")]

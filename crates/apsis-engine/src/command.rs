@@ -385,4 +385,34 @@ mod tests {
         let err = vaapi().build(&plan, &profile()).unwrap_err();
         assert!(matches!(err, EngineError::PlanProbeMismatch(_)));
     }
+
+    #[test]
+    fn generated_stereo_audio_encodes_with_ac_and_bitrate() {
+        // A 6ch source + add_stereo(eng) → the plan emits copy(5.1) AND a generated
+        // aac stereo track; this exercises the ENCODE audio branch of build_command
+        // (target codec / -ac / -b), which the copy-only golden tests never reach.
+        let prof: Profile = serde_json::from_str(
+            r#"{"video":{"codec":"hevc","skip_codecs":["hevc"]},
+                "audio":{"add_stereo":{"languages":["eng"]}},
+                "subtitles":{},"output":{"container":"mkv"}}"#,
+        )
+        .unwrap();
+        let probe = Probe {
+            video: Some(video("hevc")),
+            audio: vec![audio(1, "eng", 6, "eac3")],
+            ..Default::default()
+        };
+        let plan = plan("in.mkv", &probe, &prof);
+        assert_eq!(plan.audio.len(), 2, "copy 5.1 + generated stereo");
+        assert_eq!(plan.audio[1].action, TrackAction::Encode);
+
+        let args = vaapi().build(&plan, &prof).unwrap().build();
+        let joined = args.join(" ");
+        // Encoded stereo track a:1: aac, downmixed to 2ch, at add_stereo.bitrate.
+        assert!(joined.contains("-c:a:1 aac"), "{joined}");
+        assert!(joined.contains("-ac:a:1 2"), "{joined}");
+        assert!(joined.contains("-b:a:1 128k"), "{joined}");
+        // The original surround track a:0 stays a copy.
+        assert!(joined.contains("-c:a:0 copy"), "{joined}");
+    }
 }

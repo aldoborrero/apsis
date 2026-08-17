@@ -302,12 +302,16 @@ impl Worker {
                 if cur.version != job.version {
                     return Ok(false); // file changed since the job was planned
                 }
-                // Already claimed or finished at this version → a redelivery of an
-                // already-handled job; don't re-transcode (mirrors the coordinator
-                // change-gate on the worker side).
-                if matches!(cur.status, Status::InProgress | Status::Done) {
+                // Already completed at this version → a duplicate delivery of a
+                // done job; don't re-transcode.
+                if cur.status == Status::Done {
                     return Ok(false);
                 }
+                // Pending (the coordinator's claim) or InProgress (a PRIOR worker
+                // crashed mid-encode and the lease redelivered to us — with
+                // concurrency 1 there is no live concurrent holder to double up on).
+                // Re-claim via CAS; a Conflict means we lost the race → drop. NOT
+                // rejecting InProgress here is what makes crash recovery work.
                 match self.kv.update(key, &entry, rev).await {
                     Ok(_) => Ok(true),
                     Err(StoreError::Conflict(_)) => Ok(false),
@@ -356,9 +360,23 @@ impl Worker {
             metrics::counter!("apsis_bytes_saved_total").increment(in_bytes - out_bytes);
         }
 
-        self.kv
-            .put(key, &Self::entry(job, status, used_fallback, error.clone()))
-            .await?;
+        // Version-guarded terminal write: never regress a newer claim. If the key
+        // was superseded (a different version now owns it — the coordinator
+        // re-planned a changed file), leave that newer state alone; we still emit
+        // the result/metrics for the work we did. (Belt to the re-stat guard's
+        // suspenders, and correct once spec 003 adds a second terminal writer.)
+        let superseded =
+            matches!(self.kv.get(key).await?, Some((cur, _)) if cur.version != job.version);
+        if superseded {
+            eprintln!(
+                "apsis-worker: {key} superseded (v{} now stale); skipping terminal write",
+                job.version
+            );
+        } else {
+            self.kv
+                .put(key, &Self::entry(job, status, used_fallback, error.clone()))
+                .await?;
+        }
         let result = TranscodeResult {
             job_id: job.id,
             path: job.path.clone(),

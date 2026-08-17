@@ -87,12 +87,14 @@ pub(crate) async fn run(
     let stderr = child.stderr.take().expect("stderr piped");
     let stderr_task = tokio::spawn(read_tail(stderr, 4096));
 
-    let end = wait_with_stall(&mut child, stall_timeout)
-        .await
-        .map_err(|e| {
+    let end = match wait_with_stall(&mut child, stall_timeout).await {
+        Ok(end) => end,
+        Err(e) => {
+            stderr_task.abort(); // don't leak the drain task on the error path
             let _ = std::fs::remove_file(&temp); // don't leak the partial temp
-            RunError::from(e)
-        })?;
+            return Err(e.into());
+        }
+    };
     let stderr_tail = stderr_task.await.unwrap_or_default();
 
     let (success, stderr_tail) = match end {
