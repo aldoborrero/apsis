@@ -408,4 +408,24 @@ mod tests {
             );
         }
     }
+
+    #[test]
+    fn profile_typo_in_scheduler_is_rejected() {
+        // deny_unknown_fields on the engine config structs: a typo'd profile key
+        // fails loudly instead of silently falling back to a default.
+        let toml = r#"
+            [[library]]
+            name = "tv"
+            path = "/hdd/tv"
+            profile = "tv"
+            [profiles.tv.video]
+            codec = "hevc"
+            qualiy = 20
+            [profiles.tv.audio]
+            [profiles.tv.subtitles]
+            [profiles.tv.output]
+        "#;
+        let err = scheduler_from(&Figment::new().merge(Toml::string(toml))).unwrap_err();
+        assert!(matches!(err, ConfigError::Figment(_)), "{err}");
+    }
 }

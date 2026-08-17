@@ -4,6 +4,13 @@
 //! Range validation happens at deserialization (see `de_quality`), so an
 //! out-of-range `Profile` cannot be constructed — matching pydantic's
 //! construct-time guarantee. A richer `garde` derive can add more rules later.
+//!
+//! **Deliberate divergence from the Python oracle:** these config structs use
+//! `#[serde(deny_unknown_fields)]`, whereas the Python engine (pydantic) ignores
+//! unknown keys. apsis loads these from operator-authored `scheduler.toml` with no
+//! Python in the loop, so a typo like `qualiy = 20` should fail loudly rather than
+//! be silently dropped to a default. This strictness applies only to the config
+//! structs — the ffprobe-facing probe types stay permissive (trust boundary).
 
 use serde::{Deserialize, Deserializer, Serialize, de};
 
@@ -37,6 +44,7 @@ pub enum HdrPolicy {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct VideoConfig {
     pub codec: VideoCodec,
     // Used by the VAAPI backend in US2 (main10 / p010 for 10-bit sources) — keep.
@@ -87,6 +95,7 @@ fn de_quality<'de, D: Deserializer<'de>>(d: D) -> Result<u8, D::Error> {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct StereoConfig {
     #[serde(default = "d_aac")]
     pub codec: String,
@@ -120,6 +129,7 @@ impl Default for StereoConfig {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct AudioConfig {
     #[serde(default)]
     pub keep_languages: Vec<String>,
@@ -140,6 +150,7 @@ fn d_eng() -> String {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SubtitleConfig {
     #[serde(default)]
     pub keep_languages: Vec<String>,
@@ -152,6 +163,7 @@ pub struct SubtitleConfig {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct OutputConfig {
     #[serde(default = "d_mkv")]
     pub container: String,
@@ -164,6 +176,7 @@ fn d_mkv() -> String {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Profile {
     pub video: VideoConfig,
     pub audio: AudioConfig,
@@ -174,6 +187,7 @@ pub struct Profile {
 /// VAAPI hardware settings (port of `_engine/config.py`'s `VaapiConfig`). This is
 /// worker/host-level config the engine's command builder consumes.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct VaapiConfig {
     #[serde(default = "d_va_name")]
     pub device: String,
@@ -217,6 +231,7 @@ impl Default for VaapiConfig {
 
 /// Hardware/environment config (port of `_engine/config.py`'s `HardwareConfig`).
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct HardwareConfig {
     #[serde(default = "d_hw_env")]
     pub env: std::collections::HashMap<String, String>,
