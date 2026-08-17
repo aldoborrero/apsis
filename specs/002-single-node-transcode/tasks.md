@@ -17,12 +17,12 @@
 
 ## Phase 1: Setup (shared infrastructure)
 
-- [ ] T001 Add dependencies to the three crates' `Cargo.toml`: `apsis-common` (`serde`,
+- [X] T001 Add dependencies to the three crates' `Cargo.toml`: `apsis-common` (`serde`,
   `serde_json`, `toml`, `figment`, `garde`, `schemars`, `async-nats` 0.50, `tokio`, `ulid`,
   `thiserror`, `time`), `apsis-coordinator` + `apsis-worker` (`tokio` full, `tracing`,
   `tracing-subscriber`, `metrics`, `metrics-exporter-prometheus`, `notify` for coordinator,
   `apsis-common`, `apsis-engine`). Keep workspace lints (`clippy::all` deny, pedantic warn).
-- [ ] T002 [P] Add `nats-server` (JetStream) to `nix/devshell.nix` so integration tests and
+- [X] T002 [P] Add `nats-server` (JetStream) to `nix/devshell.nix` so integration tests and
   local runs have a broker; document the gate env var (`APSIS_TEST_NATS`) in the shell.
 - [ ] T003 [P] Wire `tracing-subscriber` + `metrics-exporter-prometheus` init helpers in
   `crates/apsis-common/src/observability.rs` (shared by both binaries).
@@ -86,9 +86,9 @@ sample clip → the file is compliant + intact and the original is atomically re
 
 ### Tests (safety-critical)
 
-- [ ] T017 [P] [US1] `crates/apsis-worker/tests/replace.rs`: verify-pass → original replaced,
+- [X] T017 [P] [US1] `crates/apsis-worker/tests/replace.rs`: verify-pass → original replaced,
   `stat` preserved; verify-**fail** → original byte-identical, temp gone (SC-001 safety half).
-- [ ] T018 [P] [US1] `crates/apsis-worker/tests/fallback.rs`: a forced VAAPI failure falls
+- [X] T018 [P] [US1] `crates/apsis-worker/tests/fallback.rs`: a forced VAAPI failure falls
   back to CPU and still produces a valid, verified output (spec AS-3). Uses a `testsrc` clip.
 
 **Checkpoint**: publishing a job transcodes + safely replaces one file; MVP of the worker.
