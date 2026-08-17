@@ -101,12 +101,12 @@ sample clip → the file is compliant + intact and the original is atomically re
 **Independent test**: reconcile a compliant library twice → 0 jobs; a mixed library →
 only non-compliant files queued.
 
-- [ ] T019 [US2] Coordinator skeleton in `crates/apsis-coordinator/src/main.rs`: load
+- [X] T019 [US2] Coordinator skeleton in `crates/apsis-coordinator/src/main.rs`: load
   `SchedulerConfig`, connect NATS, `ensure_topology`, run the reconcile loop on
   `scan_interval`.
 - [X] T020 [P] [US2] `profile_match.rs`: longest-matching `Library.path` → profile (FR-003);
   unit-tested with nested/overlapping libraries.
-- [ ] T021 [P] [US2] `discover.rs`: `notify` inotify watch ⊎ periodic walk, `is_video`
+- [X] T021 [P] [US2] `discover.rs`: `notify` inotify watch ⊎ periodic walk, `is_video`
   filter, **debounce** on unstable `mtime:size` (FR-001/002); both feed one reconcile body.
 - [X] T022 [US2] `reconcile.rs`: the one-pass algorithm (research/design §7) — version-cache
   gate (skip unchanged, no probe) → `apsis_engine::plan` → `should_skip` ? KV `Done` : KV
