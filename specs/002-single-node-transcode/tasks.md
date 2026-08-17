@@ -33,7 +33,7 @@
 
 Everything below blocks all user stories.
 
-- [ ] T004 [P] Define wire schemas in `crates/apsis-common/src/schema.rs`: `Job`,
+- [X] T004 [P] Define wire schemas in `crates/apsis-common/src/schema.rs`: `Job`,
   `StateEntry` (+ `Status` enum), `TranscodeResult` (+ `Outcome`), with serde + `schemars`;
   `Job.plan` is `apsis_engine::FilePlan`. Match [data-model.md](./data-model.md) exactly.
 - [ ] T005 [P] Define config in `crates/apsis-common/src/config.rs`: `SchedulerConfig`
@@ -47,9 +47,9 @@ Everything below blocks all user stories.
 - [ ] T007 Define the `Queue` + `StateStore` traits in
   `crates/apsis-common/src/store.rs` (publish job / pull+ack / nak / term; KV get / CAS-put),
   with a NATS-backed impl **and** an in-memory fake for unit tests (needs T004, T006).
-- [ ] T008 [P] `path_map` translation (coordinator path → local mount, longest-prefix) in
+- [X] T008 [P] `path_map` translation (coordinator path → local mount, longest-prefix) in
   `crates/apsis-common/src/pathmap.rs` — identity on rhea; real on sirius (spec 003).
-- [ ] T009 [P] `version_token(path) -> "mtime:size"` + `is_video(path)` helpers in
+- [X] T009 [P] `version_token(path) -> "mtime:size"` + `is_video(path)` helpers in
   `crates/apsis-common/src/fsutil.rs`; unit-tested.
 - [ ] T010 Re-export the public surface from `crates/apsis-common/src/lib.rs`; `cargo build`
   the three crates green (needs T004–T009).

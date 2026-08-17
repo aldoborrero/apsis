@@ -4,9 +4,15 @@ version = "0.0.0"
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "apsis shared infrastructure (NATS wrapper, telemetry, error types) — stub"
+description = "apsis shared infrastructure: wire schemas, config, NATS wiring, telemetry"
 
 [dependencies]
+apsis-engine = { path = "../apsis-engine" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+ulid = { version = "1", features = ["serde"] }
+time = { version = "0.3", features = ["serde-well-known"] }
 
 [lints]
 workspace = true
