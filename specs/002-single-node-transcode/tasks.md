@@ -69,7 +69,7 @@ sample clip → the file is compliant + intact and the original is atomically re
 - [ ] T011 [US1] Worker skeleton in `crates/apsis-worker/src/main.rs`: load `WorkerConfig`,
   connect NATS, `ensure_topology`, bind the `worker-local` pull consumer, `Semaphore` bound
   to `concurrency` (FR-010).
-- [ ] T012 [US1] `run.rs`: build the ffmpeg command from `Job.plan` via
+- [X] T012 [US1] `run.rs`: build the ffmpeg command from `Job.plan` via
   `apsis_engine::VaapiBackend`, run through `tokio::process` to a temp
   `.apsis-tmp-<ulid>` in the **source directory**, parse `-progress pipe:1` into progress
   (FR-007 temp-on-same-fs).

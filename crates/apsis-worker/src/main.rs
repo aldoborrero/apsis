@@ -6,6 +6,7 @@
 #![allow(dead_code)]
 
 mod replace;
+mod run;
 mod verify;
 
 fn main() {
