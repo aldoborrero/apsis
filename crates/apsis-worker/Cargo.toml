@@ -10,6 +10,8 @@ description = "apsis worker: run / verify / replace, backends"
 apsis-common = { path = "../apsis-common" }
 apsis-engine = { path = "../apsis-engine" }
 async-nats = "0.42"
+metrics = "0.24"
+metrics-exporter-prometheus = { version = "0.18", default-features = false, features = ["http-listener"] }
 futures = "0.3"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

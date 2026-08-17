@@ -205,6 +205,7 @@ impl Worker {
             &self.verify,
         ) {
             let _ = std::fs::remove_file(&t.outcome.temp);
+            metrics::counter!("apsis_verify_failures_total").increment(1);
             let secs = started.elapsed().as_secs_f64();
             self.finish(
                 job,
@@ -298,6 +299,23 @@ impl Worker {
             Outcome::Done => Status::Done,
             Outcome::Failed => Status::Failed,
         };
+
+        // Metrics (US4). Counters/histograms are global once the exporter is
+        // installed; scraped from the worker's /metrics endpoint.
+        let outcome_str = if matches!(outcome, Outcome::Done) {
+            "done"
+        } else {
+            "failed"
+        };
+        metrics::counter!("apsis_jobs_total", "outcome" => outcome_str).increment(1);
+        metrics::histogram!("apsis_transcode_seconds").record(duration_secs);
+        if used_fallback {
+            metrics::counter!("apsis_used_fallback_total").increment(1);
+        }
+        if matches!(outcome, Outcome::Done) && in_bytes > out_bytes {
+            metrics::counter!("apsis_bytes_saved_total").increment(in_bytes - out_bytes);
+        }
+
         self.kv
             .put(key, &Self::entry(job, status, used_fallback, error.clone()))
             .await?;

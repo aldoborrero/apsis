@@ -155,13 +155,13 @@ intact + redelivered; an unencodable file → `Failed` after `max_deliver`.
 **Goal**: Prometheus metrics + structured logs; no web UI.
 **Independent test**: scrape the endpoint → documented series present and current.
 
-- [ ] T030 [US4] Emit the metric set (research D7) from coordinator + worker:
+- [X] T030 [US4] Emit the metric set (research D7) from coordinator + worker:
   `apsis_queue_depth`, `apsis_jobs_in_flight`, `apsis_jobs_total{outcome}`,
   `apsis_transcode_seconds`, `apsis_bytes_saved_total`, `apsis_used_fallback_total`,
   `apsis_verify_failures_total`, `apsis_reconcile_seconds`.
 - [ ] T031 [P] [US4] `tracing` spans per job (job_id, path, backend, outcome) in run/verify/
   replace and the reconcile pass.
-- [ ] T032 [P] [US4] Expose the Prometheus endpoint (both binaries) and add a Grafana
+- [X] T032 [P] [US4] Expose the Prometheus endpoint (both binaries) and add a Grafana
   dashboard JSON under `docs/` (or the homelab monitoring path) for the series (SC-005).
 
 ---

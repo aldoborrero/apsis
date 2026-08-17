@@ -36,10 +36,23 @@ async fn serve() -> Result<(), Fatal> {
     let nats_url =
         std::env::var("NATS_URL").unwrap_or_else(|_| "nats://127.0.0.1:4222".to_string());
 
+    install_metrics("0.0.0.0:9101")?;
+
     let cfg = load_worker(Path::new(&cfg_path))?;
     let (client, ctx) = connect(&nats_url).await?;
     let tuning = ConsumerTuning::for_concurrency(cfg.concurrency);
     let kv = ensure_topology(&ctx, &tuning).await?;
     let worker = Worker::new(client, ctx, KvStateStore::new(kv), &cfg);
     worker.run(&tuning).await
+}
+
+/// Install the Prometheus exporter (scrape endpoint at `APSIS_METRICS_ADDR`).
+fn install_metrics(default_addr: &str) -> Result<(), Fatal> {
+    let addr: std::net::SocketAddr = std::env::var("APSIS_METRICS_ADDR")
+        .unwrap_or_else(|_| default_addr.to_string())
+        .parse()?;
+    metrics_exporter_prometheus::PrometheusBuilder::new()
+        .with_http_listener(addr)
+        .install()?;
+    Ok(())
 }

@@ -22,7 +22,7 @@ use std::time::Duration;
 
 use crate::discover::{discover_videos, sweep_temps};
 use crate::profile_match::match_library;
-use crate::reconcile::{FfprobeProber, Reconciler};
+use crate::reconcile::{FfprobeProber, ReconcileOutcome, Reconciler};
 
 /// Orphan temps older than this are crash leftovers, safe to sweep (well beyond
 /// any plausible single-file transcode).
@@ -48,6 +48,8 @@ async fn serve() -> Result<(), Fatal> {
     let nats_url =
         std::env::var("NATS_URL").unwrap_or_else(|_| "nats://127.0.0.1:4222".to_string());
     let ffprobe = std::env::var("APSIS_FFPROBE").unwrap_or_else(|_| "ffprobe".to_string());
+
+    install_metrics("0.0.0.0:9100")?;
 
     let cfg = load_scheduler(Path::new(&cfg_path))?;
     let (_client, ctx) = connect(&nats_url).await?;
@@ -82,6 +84,8 @@ async fn serve() -> Result<(), Fatal> {
 /// One reconcile pass over every library. Files under overlapping libraries are
 /// deduplicated and matched to their longest-prefix library for the profile.
 async fn reconcile_all(reconciler: &Coordinator, cfg: &SchedulerConfig) {
+    let started = std::time::Instant::now();
+    let mut enqueued: u64 = 0;
     let mut seen = HashSet::new();
     for lib in &cfg.libraries {
         for path in discover_videos(
@@ -102,12 +106,27 @@ async fn reconcile_all(reconciler: &Coordinator, cfg: &SchedulerConfig) {
             let Ok(ver) = version_token(&path) else {
                 continue;
             };
-            if let Err(e) = reconciler
+            match reconciler
                 .reconcile_file(&file, &ver, matched, profile)
                 .await
             {
-                eprintln!("apsis-coordinator: reconcile {file}: {e}");
+                Ok(ReconcileOutcome::Enqueued) => enqueued += 1,
+                Ok(_) => {}
+                Err(e) => eprintln!("apsis-coordinator: reconcile {file}: {e}"),
             }
         }
     }
+    metrics::histogram!("apsis_reconcile_seconds").record(started.elapsed().as_secs_f64());
+    metrics::counter!("apsis_reconcile_enqueued_total").increment(enqueued);
+}
+
+/// Install the Prometheus exporter (scrape endpoint at `APSIS_METRICS_ADDR`).
+fn install_metrics(default_addr: &str) -> Result<(), Fatal> {
+    let addr: std::net::SocketAddr = std::env::var("APSIS_METRICS_ADDR")
+        .unwrap_or_else(|_| default_addr.to_string())
+        .parse()?;
+    metrics_exporter_prometheus::PrometheusBuilder::new()
+        .with_http_listener(addr)
+        .install()?;
+    Ok(())
 }
