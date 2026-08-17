@@ -101,7 +101,13 @@ Point vmagent at both; dashboards go in the hub Grafana. Structured logs go to s
 
 - The worker writes the transcode to `.apsis-tmp-<ulid>` **beside** the source (same
   filesystem), verifies it (streams present, duration within tolerance, size sane), and only
-  then does a single atomic `rename(2)`. On any failure the original is byte-identical.
+  then installs it atomically. On any failure the original is byte-identical.
+- **Source-changed-during-transcode is not a revert.** A new import can overwrite the source
+  while a long encode runs; installing the now-stale output would silently drop the newer
+  content. The same-container replace closes this atomically with `renameat2(RENAME_EXCHANGE)`
+  — swap temp ↔ source, then check the content swapped *out* is the version we transcoded
+  from; if not, swap back (original restored) and discard. Filesystems without the flag (NFS,
+  older ZFS) fall back to a re-stat + rename with an unavoidable sub-ms window.
 - Ownership, mode, and mtime are re-applied so Jellyfin/Sonarr see the file unchanged.
 - A crash mid-transcode leaves the temp untouched-and-orphaned; the coordinator sweeps
   `.apsis-tmp-*` older than 6h at startup and never reconciles a temp as a source.

@@ -20,6 +20,7 @@ use futures::StreamExt;
 use time::OffsetDateTime;
 
 use crate::fallback::transcode;
+use crate::replace::ReplaceOutcome;
 use crate::verify::{check, probe_output};
 
 /// Top-level worker error: at the daemon boundary we log and nak, so a boxed
@@ -237,44 +238,42 @@ impl Worker {
             return Ok(Outcome::Failed);
         }
 
-        // Guard against the source changing under a long transcode (a new import
-        // while we were encoding). If its change token no longer matches the job's,
-        // our output is stale — discard it rather than revert the newer content
-        // over the user's changes. The coordinator will supersede to the new
-        // version and a fresh job will handle it.
-        if apsis_common::version_token(Path::new(&local_in))
-            .ok()
-            .as_deref()
-            != Some(&job.version)
-        {
-            eprintln!(
-                "apsis-worker: source {local_in} changed during transcode (v{} superseded); discarding output",
-                job.version
-            );
-            let _ = std::fs::remove_file(&t.outcome.temp);
-            return Ok(Outcome::Failed);
-        }
-
-        // Verified & still current → atomically install, preserving metadata.
-        if let Err(e) = crate::replace::atomic_replace(
+        // Verified → atomically install. `atomic_replace` re-checks the source's
+        // version at the instant of the rename (RENAME_EXCHANGE where the fs
+        // supports it), so a new import landing during the transcode can't have our
+        // now-stale output reverted over it. Superseded ⇒ discard our output and
+        // let the coordinator re-plan the newer version; the original is untouched.
+        match crate::replace::atomic_replace(
             Path::new(&local_in),
             &t.outcome.temp,
             Path::new(&local_out),
+            &job.version,
         ) {
-            let _ = std::fs::remove_file(&t.outcome.temp);
-            let secs = started.elapsed().as_secs_f64();
-            self.finish(
-                job,
-                key,
-                Outcome::Failed,
-                t.used_fallback,
-                in_bytes,
-                out_bytes,
-                secs,
-                Some(e.to_string()),
-            )
-            .await?;
-            return Ok(Outcome::Failed);
+            Ok(ReplaceOutcome::Installed) => {}
+            Ok(ReplaceOutcome::Superseded) => {
+                eprintln!(
+                    "apsis-worker: source {local_in} changed during transcode (v{} superseded); discarding output",
+                    job.version
+                );
+                let _ = std::fs::remove_file(&t.outcome.temp);
+                return Ok(Outcome::Failed);
+            }
+            Err(e) => {
+                let _ = std::fs::remove_file(&t.outcome.temp);
+                let secs = started.elapsed().as_secs_f64();
+                self.finish(
+                    job,
+                    key,
+                    Outcome::Failed,
+                    t.used_fallback,
+                    in_bytes,
+                    out_bytes,
+                    secs,
+                    Some(e.to_string()),
+                )
+                .await?;
+                return Ok(Outcome::Failed);
+            }
         }
 
         let secs = started.elapsed().as_secs_f64();
