@@ -22,3 +22,6 @@ build/
 
 # Rust
 /target
+
+# apsis local dev (process-compose NATS JetStream store)
+.dev/

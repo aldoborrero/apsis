@@ -1,0 +1,38 @@
+# Local dev stack for apsis (spec 002 single-node).
+#
+#   nix develop        # brings process-compose + nats-server onto PATH
+#   process-compose up  # starts a JetStream NATS on :4222 (monitoring :8222)
+#
+# NATS is the durable substrate the coordinator/worker use (job stream + KV +
+# consumer). The apsis binaries are staged here but disabled until implemented
+# (US1/US2) — enable them by removing `disabled: true`. Integration tests read
+# APSIS_TEST_NATS (set by the devshell to this server).
+version: "0.5"
+
+processes:
+  nats:
+    command: nats-server --jetstream --store_dir ./.dev/nats --port 4222 --http_port 8222
+    readiness_probe:
+      http_get:
+        host: 127.0.0.1
+        port: 8222
+        path: /healthz
+      initial_delay_seconds: 1
+      period_seconds: 2
+      failure_threshold: 10
+    availability:
+      restart: on_failure
+
+  coordinator:
+    command: cargo run -p apsis-coordinator
+    disabled: true # stub until spec 002 US2 (reconcile loop)
+    depends_on:
+      nats:
+        condition: process_healthy
+
+  worker:
+    command: cargo run -p apsis-worker
+    disabled: true # stub until spec 002 US1 pull loop (T016)
+    depends_on:
+      nats:
+        condition: process_healthy
