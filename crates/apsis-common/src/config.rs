@@ -9,10 +9,10 @@
 //!
 //! `scheduler.toml` drives the coordinator; `worker.toml` the worker. Profiles
 //! are `apsis_engine::Profile`; garde validation here covers the apsis-level
-//! fields, while the engine enforces its own invariant (`video.quality` range)
-//! at deserialize. Note: the engine's profile sub-structs do not currently reject
-//! unknown keys, so a typo inside a `[profiles.*]` table is silently ignored — a
-//! known gap tracked for a strictness pass.
+//! fields, while the engine enforces its own invariants at deserialize
+//! (`video.quality` range, and `deny_unknown_fields` on every profile sub-struct
+//! so a typo inside a `[profiles.*]` table fails loudly rather than being dropped
+//! to a default).
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};

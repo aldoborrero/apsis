@@ -37,23 +37,31 @@ pub(crate) fn atomic_replace(input: &Path, temp: &Path, output: &Path) -> io::Re
         sync_dir(dir)?;
     }
 
-    // The atomic install. Same path → in-place replace; different path (extension
-    // change) → new file appears, old original removed only after.
+    // --- THE COMMIT POINT ---
+    // A single atomic rename. If it fails, the original is byte-identical and we
+    // return Err; NOTHING below can undo a successful install, so every step after
+    // this is best-effort and must NOT turn a committed replace into an error.
     fs::rename(temp, output)?;
-    if output != input {
-        fs::remove_file(input)?;
+
+    // Extension change: the new file is installed; drop the old original. If the
+    // remove fails the install still stands — log rather than fail (a rare lingering
+    // duplicate beats marking a successful transcode as failed).
+    if output != input && fs::remove_file(input).is_err() {
+        eprintln!(
+            "apsis-worker: installed {} but could not remove old {} — a duplicate remains",
+            output.display(),
+            input.display()
+        );
     }
 
-    // Re-apply metadata. Order matters: set times + mode while we still own the
-    // file, then chown last (it may drop our ownership). chown is best-effort —
-    // it needs privilege the worker may not have; a transcode shouldn't fail over
-    // an ownership tweak.
-    apply_times(output, mtime, atime)?;
-    fs::set_permissions(output, Permissions::from_mode(mode))?;
+    // Re-apply metadata (best-effort). Times + mode while we still own the file,
+    // chown last (may drop our ownership); none of these is worth failing the
+    // already-committed replace over.
+    let _ = apply_times(output, mtime, atime);
+    let _ = fs::set_permissions(output, Permissions::from_mode(mode));
     let _ = std::os::unix::fs::chown(output, Some(uid), Some(gid));
-
     if let Some(dir) = output.parent() {
-        sync_dir(dir)?;
+        let _ = sync_dir(dir);
     }
     Ok(())
 }

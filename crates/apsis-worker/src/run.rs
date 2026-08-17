@@ -77,6 +77,7 @@ pub(crate) async fn run(
         .args(&argv[1..])
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
+        .kill_on_drop(true) // if this future is ever dropped, don't orphan ffmpeg
         .spawn()?;
 
     let stdout = child.stdout.take().expect("stdout piped");
@@ -84,7 +85,10 @@ pub(crate) async fn run(
     let progress = tokio::spawn(drain_progress(stdout));
     let stderr_tail = tokio::spawn(read_tail(stderr, 4096));
 
-    let status = child.wait().await?;
+    let status = child.wait().await.map_err(|e| {
+        let _ = std::fs::remove_file(&temp); // don't leak the partial temp
+        RunError::from(e)
+    })?;
     let _ = progress.await;
     let stderr_tail = stderr_tail.await.unwrap_or_default();
 

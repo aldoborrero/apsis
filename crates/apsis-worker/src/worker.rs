@@ -98,14 +98,23 @@ impl Worker {
             let attempt = msg.info().map_or(1, |i| i.delivered.max(1));
             let max_deliver = tuning.max_deliver.max(1);
 
-            // Extend the ack deadline while a long transcode runs (T025): heartbeat
-            // Progress until process() finishes, so NATS doesn't redeliver mid-encode.
+            // Extend the ack deadline while a long transcode runs (T025). CRUCIAL:
+            // process() must NOT be cancellable — dropping it mid-run would orphan
+            // the ffmpeg child and could leave the original replaced on disk but the
+            // KV state unwritten. So we poll a *pinned* process() and only send the
+            // heartbeat on the timer arm; the future is never dropped until it
+            // completes. Progress-ack errors (a transient reconnect) are ignored.
             let outcome = {
-                let hb = heartbeat(&msg, tuning.ack_wait);
-                tokio::pin!(hb);
-                tokio::select! {
-                    r = self.process(&job) => r,
-                    () = &mut hb => Err("heartbeat ended (connection lost) mid-process".into()),
+                let mut proc = std::pin::pin!(self.process(&job));
+                let period = (tuning.ack_wait / 2).max(std::time::Duration::from_secs(1));
+                loop {
+                    tokio::select! {
+                        biased;
+                        r = &mut proc => break r,
+                        () = tokio::time::sleep(period) => {
+                            let _ = msg.ack_with(AckKind::Progress).await;
+                        }
+                    }
                 }
             };
 
@@ -187,14 +196,18 @@ impl Worker {
             return Ok(Outcome::Failed);
         }
 
-        // Verify the output before touching the original.
+        // Verify the output before touching the original. A probe failure is
+        // RETRIABLE (never silently discard a good transcode as "no video", nor
+        // silently skip the truncation guard) — clean the temp and error out.
         let out_bytes = std::fs::metadata(&t.outcome.temp).map_or(0, |m| m.len());
-        let (probe, out_dur) = probe_output(&self.ffprobe, &t.outcome.temp)
-            .await
-            .unwrap_or_default();
-        let (_src, in_dur) = probe_output(&self.ffprobe, Path::new(&local_in))
-            .await
-            .unwrap_or_default();
+        let probes = tokio::join!(
+            probe_output(&self.ffprobe, &t.outcome.temp),
+            probe_output(&self.ffprobe, Path::new(&local_in)),
+        );
+        let (Ok((probe, out_dur)), Ok((_src, in_dur))) = probes else {
+            let _ = std::fs::remove_file(&t.outcome.temp);
+            return Err("ffprobe failed on output or source (retriable)".into());
+        };
         if let Err(vf) = check(
             &probe,
             &plan,
@@ -221,7 +234,25 @@ impl Worker {
             return Ok(Outcome::Failed);
         }
 
-        // Verified → atomically install, preserving the original's metadata.
+        // Guard against the source changing under a long transcode (a new import
+        // while we were encoding). If its change token no longer matches the job's,
+        // our output is stale — discard it rather than revert the newer content
+        // over the user's changes. The coordinator will supersede to the new
+        // version and a fresh job will handle it.
+        if apsis_common::version_token(Path::new(&local_in))
+            .ok()
+            .as_deref()
+            != Some(&job.version)
+        {
+            eprintln!(
+                "apsis-worker: source {local_in} changed during transcode (v{} superseded); discarding output",
+                job.version
+            );
+            let _ = std::fs::remove_file(&t.outcome.temp);
+            return Ok(Outcome::Failed);
+        }
+
+        // Verified & still current → atomically install, preserving metadata.
         if let Err(e) = crate::replace::atomic_replace(
             Path::new(&local_in),
             &t.outcome.temp,
@@ -267,6 +298,12 @@ impl Worker {
             Some((cur, rev)) => {
                 if cur.version != job.version {
                     return Ok(false); // file changed since the job was planned
+                }
+                // Already claimed or finished at this version → a redelivery of an
+                // already-handled job; don't re-transcode (mirrors the coordinator
+                // change-gate on the worker side).
+                if matches!(cur.status, Status::InProgress | Status::Done) {
+                    return Ok(false);
                 }
                 match self.kv.update(key, &entry, rev).await {
                     Ok(_) => Ok(true),
@@ -348,18 +385,6 @@ impl Worker {
             used_fallback,
             updated_at: OffsetDateTime::now_utc(),
             last_error,
-        }
-    }
-}
-
-/// Emit `AckKind::Progress` every `ack_wait/2` to keep the lease alive during a
-/// long transcode. Loops until dropped (process finished) or the connection drops.
-async fn heartbeat(msg: &async_nats::jetstream::Message, ack_wait: std::time::Duration) {
-    let period = (ack_wait / 2).max(std::time::Duration::from_secs(1));
-    loop {
-        tokio::time::sleep(period).await;
-        if msg.ack_with(AckKind::Progress).await.is_err() {
-            break; // connection gone — let the select arm surface a retriable error
         }
     }
 }

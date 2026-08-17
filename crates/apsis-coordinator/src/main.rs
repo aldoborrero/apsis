@@ -96,8 +96,16 @@ async fn reconcile_all(reconciler: &Coordinator, cfg: &SchedulerConfig) {
             if !seen.insert(path.clone()) {
                 continue;
             }
-            let file = path.to_string_lossy();
-            let Some(matched) = match_library(&cfg.libraries, &file) else {
+            // The path is the KV key and Job.path; a lossy conversion would mint a
+            // key the worker can't open. Skip non-UTF8 paths loudly instead.
+            let Some(file) = path.to_str() else {
+                eprintln!(
+                    "apsis-coordinator: skipping non-UTF8 path {}",
+                    path.display()
+                );
+                continue;
+            };
+            let Some(matched) = match_library(&cfg.libraries, file) else {
                 continue;
             };
             let Some(profile) = cfg.profiles.get(&matched.profile) else {
@@ -107,7 +115,7 @@ async fn reconcile_all(reconciler: &Coordinator, cfg: &SchedulerConfig) {
                 continue;
             };
             match reconciler
-                .reconcile_file(&file, &ver, matched, profile)
+                .reconcile_file(file, &ver, matched, profile)
                 .await
             {
                 Ok(ReconcileOutcome::Enqueued) => enqueued += 1,

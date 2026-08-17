@@ -4,10 +4,16 @@
 //! `contracts/nats-protocol.md` — these types ARE the contract. Timestamps are
 //! RFC3339 UTC; ids are ULIDs (sortable).
 //!
-//! Wire types deliberately do **not** use `deny_unknown_fields`: they cross a
-//! version boundary (coordinator ↔ worker), and spec 003 evolves them
-//! additively. An older consumer must tolerate a field a newer producer adds
-//! (rolling upgrade), so unknown fields are ignored, not rejected.
+//! These top-level wire structs deliberately do **not** use `deny_unknown_fields`,
+//! so an additive field on `Job`/`StateEntry`/`TranscodeResult` itself survives a
+//! rolling upgrade (old consumer ignores it).
+//!
+//! **Caveat — this only holds at the top level.** The nested `FilePlan` and
+//! `Profile` (and their sub-types) ARE strict (`deny_unknown_fields`, for
+//! oracle-parity), so an additive field *inside* the plan or profile in spec 003
+//! WILL break an old consumer. Additive changes there require a coordinated worker
+//! upgrade, or a permissive wire-copy of those types distinct from the strict
+//! fixture-facing ones. The forward-compat guarantee is one level deep.
 
 use apsis_engine::{FilePlan, Profile};
 use serde::{Deserialize, Serialize};
