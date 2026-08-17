@@ -34,7 +34,7 @@
 //!         vaapi_device: "/dev/dri/renderD128".into(),
 //!         ffmpeg_path: "ffmpeg".into(),
 //!     };
-//!     let args: Vec<String> = backend.build(&file_plan, &profile).build(); // exact ffmpeg argv
+//!     let args: Vec<String> = backend.build(&file_plan, &profile)?.build(); // exact ffmpeg argv
 //!     assert_eq!(args[0], "ffmpeg");
 //! }
 //! # Ok(()) }

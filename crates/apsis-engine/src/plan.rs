@@ -1,13 +1,14 @@
-//! Planning types (port of `_engine/plan.py`). The abstract, backend-neutral
-//! decision the coordinator computes and ships to the worker.
+//! Planning types + logic (port of `_engine/plan.py`). The abstract,
+//! backend-neutral decision the coordinator computes and ships to the worker.
 //!
-//! **TODO(US1):** the plan *logic* (`plan_from_probe`, audio/subtitle selection,
-//! the HDR-copy override, reason emission) is NOT ported yet — only the types.
-//! This crate is not oracle-faithful until that lands (spec 001, phase 3).
+//! Both the types and [`plan`] (`plan_from_probe`: audio/subtitle selection, the
+//! HDR-copy override, container/track reason emission, default-track selection)
+//! are ported and covered by unit tests (US1).
 //!
 //! The oracle-parity types below use `deny_unknown_fields` and no silent
 //! defaults, so a fixture with a missing/renamed field is a hard error, not a
-//! false-green equality.
+//! false-green equality. Path handling deliberately mirrors Python `pathlib`
+//! (`py_suffix`/`py_with_suffix`), not Rust's `Path::extension`.
 
 use serde::{Deserialize, Serialize};
 
@@ -183,6 +184,35 @@ fn track_title(language: &str, codec: &str, channels: u32) -> String {
     )
 }
 
+/// Final path component (after the last `/`) — Python `PurePath.name`.
+fn file_name(path: &str) -> &str {
+    match path.rfind('/') {
+        Some(i) => &path[i + 1..],
+        None => path,
+    }
+}
+
+/// Python `PurePath.suffix`: the last dot-extension of the final component,
+/// **including** the dot, or `""` when there is none. Matches `CPython` exactly —
+/// a leading-dot-only name (`.mkv`, `.hidden`) or a trailing dot (`movie.`) has
+/// no suffix, so it diverges from Rust's `Path::extension()` on those.
+fn py_suffix(path: &str) -> &str {
+    let name = file_name(path);
+    match name.rfind('.') {
+        Some(i) if i > 0 && i + 1 < name.len() => &name[i..],
+        _ => "",
+    }
+}
+
+/// Python `PurePath.with_suffix`: replace the final component's suffix, appending
+/// when it has none (so `movie.` → `movie..mkv`, `.mkv` → `.mkv.mkv`).
+fn py_with_suffix(path: &str, new_suffix: &str) -> String {
+    let name = file_name(path);
+    let dir = &path[..path.len() - name.len()]; // keeps the trailing '/' if any
+    let stem = &name[..name.len() - py_suffix(path).len()];
+    format!("{dir}{stem}{new_suffix}")
+}
+
 /// Target container extension, incl. the leading dot (e.g. `.mkv`).
 fn container_suffix(profile: &Profile) -> String {
     let c = profile.output.container.trim().trim_start_matches('.');
@@ -228,20 +258,24 @@ fn select_default_subtitle_pos(subs: &[StreamInfo], default_language: &str) -> O
 #[allow(clippy::too_many_lines)] // faithful 1:1 port of the single Python `plan_from_probe`
 pub fn plan(input_path: &str, probe: &Probe, profile: &Profile) -> FilePlan {
     let output_ext = container_suffix(profile);
-    let input = std::path::Path::new(input_path);
+    // Path handling mirrors Python `pathlib` (suffix/with_suffix), NOT Rust's
+    // `Path::extension`/`with_extension` — they diverge on dotted names (see
+    // `py_suffix`/`py_with_suffix`), which flips container decisions and paths.
     let output_path = if profile.output.replace_original {
-        input
-            .with_extension(output_ext.trim_start_matches('.'))
-            .to_string_lossy()
-            .into_owned()
+        py_with_suffix(input_path, &output_ext)
     } else {
         format!("<temp>{output_ext}")
+    };
+    let src_suffix = py_suffix(input_path); // includes the dot, or "" (Python `.suffix`)
+    let source_container = {
+        let ext = src_suffix.trim_start_matches('.');
+        (!ext.is_empty()).then(|| ext.to_string()) // Python `.suffix.lstrip('.') or None`
     };
     let output = OutputPlan {
         input_path: input_path.to_string(),
         output_path,
         replace_original: profile.output.replace_original,
-        source_container: input.extension().map(|e| e.to_string_lossy().into_owned()),
+        source_container,
         target_container: profile.output.container.clone(),
     };
 
@@ -302,15 +336,11 @@ pub fn plan(input_path: &str, probe: &Probe, profile: &Profile) -> FilePlan {
         });
     }
 
-    let src_suffix = input
-        .extension()
-        .map(|e| format!(".{}", e.to_string_lossy()))
-        .unwrap_or_default();
     if src_suffix.to_lowercase() != output_ext.to_lowercase() {
         let shown = if src_suffix.is_empty() {
             "<none>"
         } else {
-            src_suffix.as_str()
+            src_suffix
         };
         reasons.push(PlanReason {
             code: ReasonCode::ContainerMismatch,
@@ -345,7 +375,13 @@ pub fn plan(input_path: &str, probe: &Probe, profile: &Profile) -> FilePlan {
         };
         let expected_title =
             track_title(&action.stream.language, &expected_codec, expected_channels);
-        let current = probe.audio.iter().find(|s| s.index == action.stream.index);
+        // Python builds `{s.index: s for s in probe.audio}` and `.get()`s it, so a
+        // duplicate index resolves to the LAST such stream — `rev().find()` matches.
+        let current = probe
+            .audio
+            .iter()
+            .rev()
+            .find(|s| s.index == action.stream.index);
         let default = default_audio_pos == Some(i);
         audio_items.push(AudioTrackPlan {
             source_index: Some(action.stream.index),
@@ -394,7 +430,8 @@ pub fn plan(input_path: &str, probe: &Probe, profile: &Profile) -> FilePlan {
         });
     }
     for (i, sub) in kept_subs.iter().enumerate() {
-        let current = probe.subtitles.iter().find(|s| s.index == sub.index);
+        // Last-wins on duplicate index, matching Python's `{s.index: s}` dict.
+        let current = probe.subtitles.iter().rev().find(|s| s.index == sub.index);
         let default = default_sub_pos == Some(i);
         subtitle_items.push(SubtitleTrackPlan {
             source_index: Some(sub.index),
@@ -569,6 +606,71 @@ mod tests {
             p.reasons
                 .iter()
                 .any(|r| r.code == ReasonCode::AudioTrackChanged)
+        );
+    }
+
+    #[test]
+    fn py_path_semantics_match_cpython() {
+        // Verified against python3 pathlib (see review). Rust `Path::extension`
+        // would disagree on the dotted cases.
+        assert_eq!(py_suffix("movie.mkv"), ".mkv");
+        assert_eq!(py_suffix("a.b.mkv"), ".mkv");
+        assert_eq!(py_suffix("..mkv"), ".mkv");
+        assert_eq!(py_suffix(".mkv"), "");
+        assert_eq!(py_suffix("movie."), "");
+        assert_eq!(py_suffix("movie"), "");
+        assert_eq!(py_suffix("folder.d/movie"), ""); // dot only in the directory
+
+        assert_eq!(py_with_suffix("movie.mkv", ".mkv"), "movie.mkv");
+        assert_eq!(py_with_suffix("..mkv", ".mkv"), "..mkv"); // NOT ".."
+        assert_eq!(py_with_suffix("movie.", ".mkv"), "movie..mkv");
+        assert_eq!(py_with_suffix(".mkv", ".mkv"), ".mkv.mkv");
+        assert_eq!(py_with_suffix("movie", ".mkv"), "movie.mkv");
+        assert_eq!(py_with_suffix("folder/clip.mp4", ".mkv"), "folder/clip.mkv");
+    }
+
+    #[test]
+    fn output_path_and_container_follow_pathlib_not_extension() {
+        let probe = Probe {
+            video: Some(video("hevc", "")),
+            ..Default::default()
+        };
+        // Trailing-dot: with_suffix appends → "movie..mkv"; suffix "" → no container.
+        let p = plan("movie.", &probe, &profile(HEVC));
+        assert_eq!(p.output.output_path, "movie..mkv");
+        assert_eq!(p.output.source_container, None);
+        assert!(
+            p.reasons
+                .iter()
+                .any(|r| r.code == ReasonCode::ContainerMismatch)
+        );
+
+        // Double-leading-dot: with_suffix → "..mkv" (Rust with_extension would give ".."),
+        // suffix ".mkv" matches target → compliant, not a container change.
+        let p = plan("..mkv", &probe, &profile(HEVC));
+        assert_eq!(p.output.output_path, "..mkv");
+        assert_eq!(p.output.source_container.as_deref(), Some("mkv"));
+        assert!(p.compliant && p.should_skip);
+    }
+
+    #[test]
+    fn duplicate_audio_index_resolves_to_last_like_python_dict() {
+        // Two audio streams share index 1; Python's `{s.index: s}` keeps the last.
+        let probe = Probe {
+            video: Some(video("hevc", "")),
+            audio: vec![
+                audio(1, "eng", 6, "eac3", "First"),
+                audio(1, "eng", 6, "eac3", "Second"),
+            ],
+            ..Default::default()
+        };
+        let p = plan("x.mkv", &probe, &profile(HEVC));
+        // `title_before` comes from the `current` lookup — must be the LAST stream.
+        assert!(
+            p.audio
+                .iter()
+                .all(|a| a.title_before.as_deref() == Some("Second")),
+            "duplicate-index lookup must resolve to the last stream (Python dict semantics)"
         );
     }
 }

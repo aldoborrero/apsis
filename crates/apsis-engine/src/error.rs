@@ -9,6 +9,12 @@ pub enum EngineError {
     #[error("failed to parse ffprobe JSON or profile: {0}")]
     ParseJson(#[from] serde_json::Error),
 
+    /// A `FilePlan` references a stream absent from its own `source_probe` (or a
+    /// track plan lacks `source_index`). Mirrors the Python engine raising
+    /// (`AssertionError`/`ValueError`) rather than silently mis-mapping a stream.
+    #[error("plan/probe mismatch: {0}")]
+    PlanProbeMismatch(String),
+
     #[cfg(feature = "probe-exec")]
     #[error("ffprobe I/O error: {0}")]
     Ffprobe(#[from] std::io::Error),

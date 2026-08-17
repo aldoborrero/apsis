@@ -23,7 +23,7 @@ if file_plan.should_skip {
         vaapi_device: "/dev/dri/renderD128".into(),
         ffmpeg_path: "ffmpeg".into(),
     };
-    let args = backend.build(&file_plan, &profile).build(); // exact ffmpeg argv for the worker
+    let args = backend.build(&file_plan, &profile)?.build(); // exact ffmpeg argv for the worker
 }
 ```
 

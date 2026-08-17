@@ -2,8 +2,10 @@
 //! `_engine/command.py`'s `build_encode_command_from_plan`).
 
 use crate::config::{Encoder, HardwareConfig, Profile, VideoCodec};
+use crate::error::EngineError;
 use crate::ffmpeg::FfmpegCommand;
 use crate::plan::{FilePlan, TrackAction, VideoAction};
+use crate::probe::StreamInfo;
 
 /// Backend selection + paths for building the command.
 pub struct BuildOptions<'a> {
@@ -27,9 +29,37 @@ fn cpu_encoder(codec: VideoCodec) -> &'static str {
     }
 }
 
+/// Relative `0:a:N` / `0:s:N` index for a source stream, by absolute index.
+///
+/// Mirrors the Python `indices.index(source_index)` (first match), and mirrors
+/// its `ValueError` when the plan references a stream absent from the probe —
+/// we fail loudly rather than mint a command that muxes the wrong stream.
+fn relative_index(
+    streams: &[StreamInfo],
+    source_index: u32,
+    kind: &str,
+) -> Result<usize, EngineError> {
+    streams
+        .iter()
+        .position(|s| s.index == source_index)
+        .ok_or_else(|| {
+            let indices: Vec<u32> = streams.iter().map(|s| s.index).collect();
+            EngineError::PlanProbeMismatch(format!(
+                "{kind} stream index {source_index} not found in available {kind} streams: {indices:?}"
+            ))
+        })
+}
+
 /// Build the ffmpeg command for `plan` under `profile` and the given options.
-#[must_use]
-pub fn build_command(plan: &FilePlan, profile: &Profile, opts: &BuildOptions<'_>) -> FfmpegCommand {
+///
+/// # Errors
+/// Returns [`EngineError::PlanProbeMismatch`] if a track plan lacks a
+/// `source_index`, or references a stream absent from `plan.source_probe`.
+pub fn build_command(
+    plan: &FilePlan,
+    profile: &Profile,
+    opts: &BuildOptions<'_>,
+) -> Result<FfmpegCommand, EngineError> {
     let mut cmd = FfmpegCommand::new();
     cmd.set_ffmpeg_path(opts.ffmpeg_path);
 
@@ -76,17 +106,13 @@ pub fn build_command(plan: &FilePlan, profile: &Profile, opts: &BuildOptions<'_>
 
     // --- Audio ---
     for item in &plan.audio {
-        // source_index always Some for real tracks; the invariant holds because the
-        // plan was derived from this probe. Fall back rather than panic (FR-010).
-        let Some(src) = item.source_index else {
-            continue;
-        };
-        let rel = plan
-            .source_probe
-            .audio
-            .iter()
-            .position(|s| s.index == src)
-            .unwrap_or(0);
+        // Python asserts source_index is present, then raises if it is not found
+        // in the probe (command.py). We mirror both as PlanProbeMismatch rather
+        // than silently dropping or mis-mapping a stream.
+        let src = item.source_index.ok_or_else(|| {
+            EngineError::PlanProbeMismatch("audio track plan is missing source_index".to_string())
+        })?;
+        let rel = relative_index(&plan.source_probe.audio, src, "audio")?;
         let a_idx = cmd.map_stream(&format!("0:a:{rel}"));
         if item.action == TrackAction::Copy {
             cmd.set_codec(a_idx, "copy", &[]);
@@ -107,15 +133,12 @@ pub fn build_command(plan: &FilePlan, profile: &Profile, opts: &BuildOptions<'_>
 
     // --- Subtitles ---
     for item in &plan.subtitles {
-        let Some(src) = item.source_index else {
-            continue;
-        };
-        let rel = plan
-            .source_probe
-            .subtitles
-            .iter()
-            .position(|s| s.index == src)
-            .unwrap_or(0);
+        let src = item.source_index.ok_or_else(|| {
+            EngineError::PlanProbeMismatch(
+                "subtitle track plan is missing source_index".to_string(),
+            )
+        })?;
+        let rel = relative_index(&plan.source_probe.subtitles, src, "subtitle")?;
         let s_idx = cmd.map_stream(&format!("0:s:{rel}"));
         cmd.set_codec(s_idx, "copy", &[]);
         cmd.set_disposition(s_idx, if item.default { "default" } else { "0" });
@@ -123,12 +146,14 @@ pub fn build_command(plan: &FilePlan, profile: &Profile, opts: &BuildOptions<'_>
     // CC recovery (cc_subtitle_path) is deferred — Phase 2, `_RECOVER_CC` parked.
 
     cmd.set_output(&plan.output.output_path);
-    cmd
+    Ok(cmd)
 }
 
 /// A transcode backend: turns a plan into a concrete ffmpeg command.
 pub trait Backend {
-    fn build(&self, plan: &FilePlan, profile: &Profile) -> FfmpegCommand;
+    /// # Errors
+    /// Propagates [`EngineError::PlanProbeMismatch`] from [`build_command`].
+    fn build(&self, plan: &FilePlan, profile: &Profile) -> Result<FfmpegCommand, EngineError>;
 }
 
 /// VAAPI (AMD) backend: `hevc_vaapi`/`av1_vaapi` with the `sei=hdr` workaround.
@@ -139,7 +164,7 @@ pub struct VaapiBackend {
 }
 
 impl Backend for VaapiBackend {
-    fn build(&self, plan: &FilePlan, profile: &Profile) -> FfmpegCommand {
+    fn build(&self, plan: &FilePlan, profile: &Profile) -> Result<FfmpegCommand, EngineError> {
         build_command(
             plan,
             profile,
@@ -159,7 +184,7 @@ pub struct CpuBackend {
 }
 
 impl Backend for CpuBackend {
-    fn build(&self, plan: &FilePlan, profile: &Profile) -> FfmpegCommand {
+    fn build(&self, plan: &FilePlan, profile: &Profile) -> Result<FfmpegCommand, EngineError> {
         build_command(
             plan,
             profile,
@@ -222,7 +247,7 @@ mod tests {
             ..Default::default()
         };
         let plan = plan("in.mkv", &probe, &profile());
-        let args = vaapi().build(&plan, &profile()).build();
+        let args = vaapi().build(&plan, &profile()).unwrap().build();
         let expected = [
             "ffmpeg",
             "-y",
@@ -260,7 +285,7 @@ mod tests {
             ..Default::default()
         };
         let plan = plan("in.mkv", &probe, &profile());
-        let args = vaapi().build(&plan, &profile()).build();
+        let args = vaapi().build(&plan, &profile()).unwrap().build();
         let expected = [
             "ffmpeg",
             "-y",
@@ -308,7 +333,7 @@ mod tests {
         let cpu = CpuBackend {
             ffmpeg_path: "ffmpeg".into(),
         };
-        let args = cpu.build(&plan, &profile()).build();
+        let args = cpu.build(&plan, &profile()).unwrap().build();
         let expected = [
             "ffmpeg",
             "-y",
@@ -328,5 +353,36 @@ mod tests {
             "in.mkv",
         ];
         assert_eq!(args, expected);
+    }
+
+    #[test]
+    fn errors_when_audio_source_index_absent_from_probe() {
+        // A plan whose audio item points at a stream the probe doesn't have must
+        // fail loudly (Python raises ValueError) — never silently map 0:a:0.
+        let probe = Probe {
+            video: Some(video("h264")),
+            audio: vec![audio(1, "eng", 2, "aac")],
+            ..Default::default()
+        };
+        let mut plan = plan("in.mkv", &probe, &profile());
+        plan.audio[0].source_index = Some(99); // not in probe.audio
+        let err = vaapi().build(&plan, &profile()).unwrap_err();
+        assert!(
+            matches!(err, EngineError::PlanProbeMismatch(ref m) if m.contains("99")),
+            "expected PlanProbeMismatch mentioning 99, got: {err}"
+        );
+    }
+
+    #[test]
+    fn errors_when_audio_source_index_missing() {
+        let probe = Probe {
+            video: Some(video("h264")),
+            audio: vec![audio(1, "eng", 2, "aac")],
+            ..Default::default()
+        };
+        let mut plan = plan("in.mkv", &probe, &profile());
+        plan.audio[0].source_index = None; // Python asserts source_index is not None
+        let err = vaapi().build(&plan, &profile()).unwrap_err();
+        assert!(matches!(err, EngineError::PlanProbeMismatch(_)));
     }
 }
