@@ -56,7 +56,8 @@ replace_original = true
 `worker.toml` (worker) — backends + verify + path map:
 
 ```toml
-concurrency = 1          # AMD VCN HEVC is single-session
+concurrency  = 1          # AMD VCN HEVC is single-session
+stall_timeout = "2m"      # kill ffmpeg if it emits no progress for this long
 
 [verify]
 duration_tolerance = "1s"

@@ -35,6 +35,7 @@ pub(crate) struct Worker {
     path_map: PathMap,
     verify: VerifyConfig,
     ffprobe: PathBuf,
+    stall_timeout: std::time::Duration,
 }
 
 fn build_backend(bc: &BackendConfig, ffmpeg: &str) -> Box<dyn Backend> {
@@ -76,6 +77,7 @@ impl Worker {
             path_map: PathMap::new(cfg.path_map.clone()),
             verify: cfg.verify.clone(),
             ffprobe: cfg.ffprobe.clone(),
+            stall_timeout: cfg.stall_timeout,
         }
     }
 
@@ -175,6 +177,7 @@ impl Worker {
             self.fallback.as_deref(),
             &plan,
             &job.profile_config,
+            self.stall_timeout,
         )
         .await?;
 

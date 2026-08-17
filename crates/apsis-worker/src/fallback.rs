@@ -2,6 +2,8 @@
 //! non-zero exit, retry once on the fallback (CPU) and record that it was used.
 //! Generic over `&dyn Backend` so it serves VAAPI (rhea) or NVENC (sirius, 003).
 
+use std::time::Duration;
+
 use apsis_engine::{Backend, FilePlan, Profile};
 
 use crate::run::{RunError, RunOutcome, run};
@@ -23,8 +25,9 @@ pub(crate) async fn transcode(
     fallback: Option<&dyn Backend>,
     plan: &FilePlan,
     profile: &Profile,
+    stall_timeout: Duration,
 ) -> Result<Transcoded, RunError> {
-    let first = run(primary, plan, profile).await?;
+    let first = run(primary, plan, profile, stall_timeout).await?;
     let Some(fallback) = fallback else {
         return Ok(Transcoded {
             outcome: first,
@@ -37,9 +40,9 @@ pub(crate) async fn transcode(
             used_fallback: false,
         });
     }
-    // Primary failed → drop its partial temp, retry on the fallback.
+    // Primary failed (non-zero exit or stall) → drop its temp, retry on fallback.
     let _ = std::fs::remove_file(&first.temp);
-    let second = run(fallback, plan, profile).await?;
+    let second = run(fallback, plan, profile, stall_timeout).await?;
     Ok(Transcoded {
         outcome: second,
         used_fallback: true,
@@ -108,9 +111,15 @@ mod tests {
             ffmpeg_path: "ffmpeg".into(),
         };
 
-        let t = transcode(&vaapi, Some(&cpu as &dyn Backend), &p, &profile)
-            .await
-            .unwrap();
+        let t = transcode(
+            &vaapi,
+            Some(&cpu as &dyn Backend),
+            &p,
+            &profile,
+            Duration::from_secs(30),
+        )
+        .await
+        .unwrap();
         assert!(t.used_fallback, "VAAPI should have failed and fallen back");
         assert!(
             t.outcome.success,
@@ -153,7 +162,9 @@ mod tests {
             ffmpeg_path: "ffmpeg".into(),
         };
         // primary = CPU, no fallback configured.
-        let t = transcode(&cpu, None, &p, &profile).await.unwrap();
+        let t = transcode(&cpu, None, &p, &profile, Duration::from_secs(30))
+            .await
+            .unwrap();
         assert!(!t.used_fallback);
         assert!(t.outcome.success);
         std::fs::remove_dir_all(&dir).ok();

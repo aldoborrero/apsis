@@ -5,6 +5,7 @@
 use std::io;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
+use std::time::Duration;
 
 use apsis_engine::{Backend, EngineError, FilePlan, Profile};
 use thiserror::Error;
@@ -58,16 +59,18 @@ pub(crate) fn build_argv(
 
 /// Run `backend`'s command for `plan`, writing to a fresh temp beside the output.
 ///
-/// Both pipes are drained concurrently so ffmpeg can't deadlock on a full buffer.
+/// stderr is drained concurrently (bounded tail); stdout (`-progress`) is watched
+/// for a stall — no line within `stall_timeout` means a hung ffmpeg, which is
+/// killed and reported as a non-success so the caller can fall back.
 ///
 /// # Errors
-/// Command-build or process-spawn/wait failures. A non-zero ffmpeg exit is *not*
-/// an error — it is reported via [`RunOutcome::success`] so the caller can fall
-/// back to CPU.
+/// Command-build or process-spawn/wait failures. A non-zero exit or a stall is
+/// *not* an error — both surface via [`RunOutcome::success`] = `false`.
 pub(crate) async fn run(
     backend: &dyn Backend,
     plan: &FilePlan,
     profile: &Profile,
+    stall_timeout: Duration,
 ) -> Result<RunOutcome, RunError> {
     let output = PathBuf::from(&plan.output.output_path);
     let temp = temp_path(&output);
@@ -80,30 +83,66 @@ pub(crate) async fn run(
         .kill_on_drop(true) // if this future is ever dropped, don't orphan ffmpeg
         .spawn()?;
 
-    let stdout = child.stdout.take().expect("stdout piped");
+    // Drain stderr concurrently so its pipe can't deadlock while we watch stdout.
     let stderr = child.stderr.take().expect("stderr piped");
-    let progress = tokio::spawn(drain_progress(stdout));
-    let stderr_tail = tokio::spawn(read_tail(stderr, 4096));
+    let stderr_task = tokio::spawn(read_tail(stderr, 4096));
 
-    let status = child.wait().await.map_err(|e| {
-        let _ = std::fs::remove_file(&temp); // don't leak the partial temp
-        RunError::from(e)
-    })?;
-    let _ = progress.await;
-    let stderr_tail = stderr_tail.await.unwrap_or_default();
+    let end = wait_with_stall(&mut child, stall_timeout)
+        .await
+        .map_err(|e| {
+            let _ = std::fs::remove_file(&temp); // don't leak the partial temp
+            RunError::from(e)
+        })?;
+    let stderr_tail = stderr_task.await.unwrap_or_default();
 
+    let (success, stderr_tail) = match end {
+        RunEnd::Exited(status) => (status.success(), stderr_tail),
+        RunEnd::Stalled => (
+            false,
+            format!("ffmpeg stalled: no progress for {stall_timeout:?}, killed\n{stderr_tail}"),
+        ),
+    };
     Ok(RunOutcome {
         temp,
-        success: status.success(),
+        success,
         stderr_tail,
     })
 }
 
-/// Consume ffmpeg's `-progress` stream so the pipe never blocks. (Stall detection
-/// on `out_time`/`speed` is a later refinement; for now we just drain.)
-async fn drain_progress<R: tokio::io::AsyncRead + Unpin>(reader: R) {
-    let mut lines = BufReader::new(reader).lines();
-    while let Ok(Some(_line)) = lines.next_line().await {}
+enum RunEnd {
+    Exited(std::process::ExitStatus),
+    Stalled,
+}
+
+/// Wait for the child while reading its `-progress` stdout. stdout EOF signals the
+/// process is finishing (then we reap the exit status); if no progress line
+/// arrives within `stall_timeout` the process is hung (e.g. a VAAPI/VCN driver
+/// deadlock) — kill it and report a stall. `stall_timeout == 0` disables the watch.
+async fn wait_with_stall(
+    child: &mut tokio::process::Child,
+    stall_timeout: Duration,
+) -> io::Result<RunEnd> {
+    let stdout = child.stdout.take().expect("stdout piped");
+    let mut lines = BufReader::new(stdout).lines();
+    loop {
+        let line = if stall_timeout.is_zero() {
+            lines.next_line().await
+        } else {
+            match tokio::time::timeout(stall_timeout, lines.next_line()).await {
+                Ok(res) => res,
+                Err(_elapsed) => {
+                    let _ = child.start_kill();
+                    let _ = child.wait().await;
+                    return Ok(RunEnd::Stalled);
+                }
+            }
+        };
+        match line {
+            Ok(Some(_)) => {}           // progress tick → keep watching
+            Ok(None) | Err(_) => break, // stdout closed → process finishing
+        }
+    }
+    Ok(RunEnd::Exited(child.wait().await?))
 }
 
 /// Read a stream, keeping only the last `cap` bytes (a UTF-8-lossy tail).
@@ -205,10 +244,46 @@ mod tests {
         let cpu = CpuBackend {
             ffmpeg_path: "ffmpeg".into(),
         };
-        let out = run(&cpu, &p, &profile).await.unwrap();
+        let out = run(&cpu, &p, &profile, Duration::from_secs(30))
+            .await
+            .unwrap();
         assert!(out.success, "transcode failed: {}", out.stderr_tail);
         assert!(out.temp.exists(), "temp output written");
         assert!(std::fs::metadata(&out.temp).unwrap().len() > 0);
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[tokio::test]
+    async fn stall_kills_a_hung_process() {
+        // `sleep` emits no stdout → no "progress" → the watch must kill it fast.
+        let mut child = Command::new("sleep")
+            .arg("30")
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .kill_on_drop(true)
+            .spawn()
+            .unwrap();
+        let start = std::time::Instant::now();
+        let end = wait_with_stall(&mut child, Duration::from_millis(300))
+            .await
+            .unwrap();
+        assert!(matches!(end, RunEnd::Stalled));
+        assert!(start.elapsed() < Duration::from_secs(5), "killed promptly");
+    }
+
+    #[tokio::test]
+    async fn progress_output_prevents_stall() {
+        // Ticks every 100ms keep the 500ms watch alive; the process exits cleanly.
+        let mut child = Command::new("sh")
+            .args(["-c", "for i in 1 2 3 4 5; do echo tick; sleep 0.1; done"])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .kill_on_drop(true)
+            .spawn()
+            .unwrap();
+        let end = wait_with_stall(&mut child, Duration::from_millis(500))
+            .await
+            .unwrap();
+        assert!(matches!(end, RunEnd::Exited(s) if s.success()));
     }
 }

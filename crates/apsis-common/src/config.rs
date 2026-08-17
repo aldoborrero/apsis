@@ -125,6 +125,10 @@ pub struct WorkerConfig {
     pub ffmpeg: PathBuf,
     #[serde(default = "d_ffprobe")]
     pub ffprobe: PathBuf,
+    /// Kill ffmpeg if it emits no `-progress` output for this long (a hung VAAPI/
+    /// VCN driver would otherwise heartbeat the lease forever and wedge the worker).
+    #[serde(with = "humantime_serde", default = "d_stall_timeout")]
+    pub stall_timeout: Duration,
     #[serde(default)]
     pub verify: VerifyConfig,
     #[garde(dive)]
@@ -192,6 +196,9 @@ fn d_ffmpeg() -> PathBuf {
 }
 fn d_ffprobe() -> PathBuf {
     PathBuf::from("ffprobe")
+}
+fn d_stall_timeout() -> Duration {
+    Duration::from_mins(2)
 }
 fn d_dur_tol() -> Duration {
     Duration::from_secs(1)
