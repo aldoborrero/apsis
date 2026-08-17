@@ -9,7 +9,8 @@ members = [
 
 [workspace.package]
 edition = "2024"
-rust-version = "1.85"
+# 1.87: Duration::from_mins/from_hours (duration_constructors_lite) stabilized here.
+rust-version = "1.87"
 license = "MIT"
 repository = "https://github.com/aldoborrero/pyflows"
 

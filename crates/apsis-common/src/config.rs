@@ -8,8 +8,11 @@
 //! refuse startup. Config is TOML files in git; overrides edit the file.
 //!
 //! `scheduler.toml` drives the coordinator; `worker.toml` the worker. Profiles
-//! are `apsis_engine::Profile` — the engine self-validates them at deserialize,
-//! so they are `skip`ped here rather than re-validated.
+//! are `apsis_engine::Profile`; garde validation here covers the apsis-level
+//! fields, while the engine enforces its own invariant (`video.quality` range)
+//! at deserialize. Note: the engine's profile sub-structs do not currently reject
+//! unknown keys, so a typo inside a `[profiles.*]` table is silently ignored — a
+//! known gap tracked for a strictness pass.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -112,7 +115,7 @@ impl Default for Reconcile {
 #[serde(deny_unknown_fields)]
 #[garde(allow_unvalidated)]
 pub struct WorkerConfig {
-    #[garde(range(min = 1))]
+    #[garde(range(min = 1, max = 256))]
     #[serde(default = "d_concurrency")]
     pub concurrency: u32,
     /// Coordinator path → local mount (identity on rhea).
@@ -240,7 +243,7 @@ fn worker_from(fig: &Figment) -> Result<WorkerConfig, ConfigError> {
     Ok(cfg)
 }
 
-/// Load + validate `scheduler.toml` (with `APSIS_`-prefixed env overrides).
+/// Load + validate `scheduler.toml`.
 ///
 /// # Errors
 /// Parse, validation, empty-libraries, or unknown-profile failures (fail-fast).
@@ -248,10 +251,10 @@ pub fn load_scheduler(path: &Path) -> Result<SchedulerConfig, ConfigError> {
     scheduler_from(&Figment::new().merge(Toml::file(path)))
 }
 
-/// Load + validate `worker.toml` (with `APSIS_`-prefixed env overrides).
+/// Load + validate `worker.toml`.
 ///
 /// # Errors
-/// Parse, validation, or empty-backends failures (fail-fast).
+/// Parse, validation, empty-backends, or bad-ratio failures (fail-fast).
 pub fn load_worker(path: &Path) -> Result<WorkerConfig, ConfigError> {
     worker_from(&Figment::new().merge(Toml::file(path)))
 }

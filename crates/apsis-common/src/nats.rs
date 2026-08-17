@@ -111,6 +111,10 @@ pub async fn ensure_topology(
 /// Idempotently obtain the KV bucket. `get`-first so a transient error is never
 /// mistaken for "absent" (which would spuriously try to create); if `create`
 /// races an existing bucket, `get` again rather than surfacing "already in use".
+///
+/// Like the stream/consumer above, this does **not** reconcile a pre-existing
+/// bucket whose config (`history`, `storage`) differs from the intended one —
+/// `get_key_value` accepts any existing bucket. Drift reconciliation is deferred.
 async fn ensure_kv(ctx: &Context) -> Result<kv::Store, async_nats::Error> {
     if let Ok(store) = ctx.get_key_value(KV_BUCKET).await {
         return Ok(store);

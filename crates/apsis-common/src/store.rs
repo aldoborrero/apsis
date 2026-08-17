@@ -23,7 +23,11 @@ pub enum StoreError {
     #[error("CAS conflict on key {0:?}")]
     Conflict(String),
     /// Any other backend failure. Boxed as `dyn Error` (not an async-nats type)
-    /// so callers aren't coupled to the broker crate's version.
+    /// so the *error surface* isn't coupled to the broker crate's version.
+    /// (Constructors like [`KvStateStore::new`] and the [`crate::nats`] fns still
+    /// take/return async-nats types by design — async-nats is centralized here.)
+    /// Note: this is opaque, so a caller cannot yet classify retriable-vs-fatal;
+    /// that classification is added in the worker phase (US3).
     #[error(transparent)]
     Backend(Box<dyn std::error::Error + Send + Sync>),
 }
@@ -32,25 +36,41 @@ fn to_bytes<T: serde::Serialize>(v: &T) -> Result<Bytes, StoreError> {
     Ok(Bytes::from(serde_json::to_vec(v)?))
 }
 
-/// Per-file state (KV `transcode_state`). `get`/`update` carry the revision for
-/// compare-and-set; `create` fails if the key already exists.
+/// Per-file state (KV `transcode_state`).
+///
+/// The `revision` `u64` is the KV **stream sequence** (a bucket-global,
+/// monotonic-but-non-contiguous token). It is unrelated to
+/// [`StateEntry::version`] (the `mtime:size` change token) — never do arithmetic
+/// on it; round-trip the opaque value from `get`/`create` into the next `update`.
+///
+/// **Claim protocol.** A caller with `get` == `None` uses `create`; `get` ==
+/// `Some(rev)` uses `update(rev)`. A [`StoreError::Conflict`] on *either* arm
+/// means another actor won the race — re-`get` and act on the fresh state (a
+/// `create` conflict → the key now exists → switch to `update`). In the
+/// single-node coordinator, the reconcile pass and inotify feed one serialized
+/// task, so this race is in-process and easily avoided; the CAS is the backstop
+/// for the distributed case (spec 003).
 #[async_trait]
 pub trait StateStore: Send + Sync {
-    /// Returns `(entry, revision)` or `None` if absent/deleted.
+    /// Returns `(entry, revision)`, or `None` if the key is absent. A
+    /// deleted/purged key also reads as `None` — but this crate never deletes, so
+    /// that tombstone path is not exercised here (would land against real NATS).
     async fn get(&self, key: &str) -> Result<Option<(StateEntry, u64)>, StoreError>;
     /// Create a new key; [`StoreError::Conflict`] if it already exists.
     async fn create(&self, key: &str, entry: &StateEntry) -> Result<u64, StoreError>;
     /// CAS update at `revision`; [`StoreError::Conflict`] on a stale revision.
     async fn update(&self, key: &str, entry: &StateEntry, revision: u64)
     -> Result<u64, StoreError>;
-    /// Unconditional overwrite (used when folding a result).
+    /// Unconditional overwrite (used when folding a result into `Done`/`Failed`).
     async fn put(&self, key: &str, entry: &StateEntry) -> Result<u64, StoreError>;
 }
 
-/// Publish a job to a subject.
+/// Publish a job. The subject is fixed to `jobs.transcode.local` (single-node);
+/// spec 003 will add backend routing. Keeping the subject out of the API removes
+/// the mis-routing footgun (a typo'd subject that no consumer filters).
 #[async_trait]
 pub trait JobPublisher: Send + Sync {
-    async fn publish(&self, subject: &str, job: &Job) -> Result<(), StoreError>;
+    async fn publish(&self, job: &Job) -> Result<(), StoreError>;
 }
 
 // --- NATS-backed impls (newtypes avoid colliding with kv::Store's inherent
@@ -131,12 +151,13 @@ impl NatsPublisher {
 
 #[async_trait]
 impl JobPublisher for NatsPublisher {
-    async fn publish(&self, subject: &str, job: &Job) -> Result<(), StoreError> {
+    async fn publish(&self, job: &Job) -> Result<(), StoreError> {
         let bytes = to_bytes(job)?;
-        // Await the publish, then the ack, so a job is durably stored before we
-        // claim it in KV (contract §invariant 1).
+        // Fixed subject: the job MUST land on the work stream's filtered subject,
+        // or it would ack into the stream yet reach no consumer (silent drop).
+        // Await the publish, then the ack, so it's durably stored (contract §inv 1).
         self.0
-            .publish(subject.to_string(), bytes)
+            .publish(crate::nats::SUBJECT_LOCAL, bytes)
             .await
             .map_err(|e| StoreError::Backend(e.into()))?
             .await
@@ -149,12 +170,13 @@ impl JobPublisher for NatsPublisher {
 
 /// In-memory [`StateStore`] with the same CAS *semantics* as the KV impl.
 ///
-/// Revisions come from a **bucket-global** counter that every write to *any* key
-/// advances — mirroring NATS KV, where revision is the stream sequence, not a
-/// per-key counter. So a key's successive revisions are non-contiguous and never
-/// a predictable `n, n+1`. This is deliberate: it makes any coordinator code that
-/// does revision *arithmetic* (instead of round-tripping the opaque `u64`) fail
-/// here, where the real backend would also fail.
+/// Revisions come from a **bucket-global** counter, mirroring NATS KV where the
+/// revision is the stream sequence rather than a per-key counter. To make the
+/// distinction impossible to miss, the counter advances by **2** on every write:
+/// a key's revisions are therefore always non-contiguous (`2, 4, …`), so any
+/// coordinator code that does `rev + 1` arithmetic fails here — even on a quiet,
+/// single-key bucket where real NATS *would* happen to be contiguous. A stricter
+/// fake than the backend, deliberately, to catch the bug earlier.
 #[derive(Default)]
 struct FakeState {
     map: HashMap<String, (StateEntry, u64)>,
@@ -164,7 +186,7 @@ struct FakeState {
 
 impl FakeState {
     fn write(&mut self, key: &str, entry: &StateEntry) -> u64 {
-        self.seq += 1;
+        self.seq += 2; // non-contiguous on purpose — see FakeStateStore docs
         self.map.insert(key.to_string(), (entry.clone(), self.seq));
         self.seq
     }
@@ -207,19 +229,19 @@ impl StateStore for FakeStateStore {
     }
 }
 
-/// In-memory [`JobPublisher`] that records everything published.
+/// In-memory [`JobPublisher`] that records every published job.
 #[derive(Default, Clone)]
-pub struct FakeQueue {
-    inner: Arc<Mutex<Vec<(String, Job)>>>,
+pub struct FakeJobPublisher {
+    inner: Arc<Mutex<Vec<Job>>>,
 }
 
-impl FakeQueue {
-    /// Every `(subject, job)` published so far.
+impl FakeJobPublisher {
+    /// Every job published so far.
     ///
     /// # Panics
     /// If the internal lock is poisoned (a prior panic while holding it).
     #[must_use]
-    pub fn published(&self) -> Vec<(String, Job)> {
+    pub fn published(&self) -> Vec<Job> {
         self.inner.lock().unwrap().clone()
     }
 
@@ -239,12 +261,9 @@ impl FakeQueue {
 }
 
 #[async_trait]
-impl JobPublisher for FakeQueue {
-    async fn publish(&self, subject: &str, job: &Job) -> Result<(), StoreError> {
-        self.inner
-            .lock()
-            .unwrap()
-            .push((subject.to_string(), job.clone()));
+impl JobPublisher for FakeJobPublisher {
+    async fn publish(&self, job: &Job) -> Result<(), StoreError> {
+        self.inner.lock().unwrap().push(job.clone());
         Ok(())
     }
 }
@@ -324,10 +343,37 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn fake_queue_records_publishes() {
-        let q = FakeQueue::default();
-        assert!(q.is_empty());
-        let job = Job {
+    async fn put_folds_result_unconditionally() {
+        let s = FakeStateStore::default();
+        // `put` on an absent key creates it; on a present key overwrites, no CAS.
+        let r1 = s.put("a", &entry(Status::Done, "v")).await.unwrap();
+        let r2 = s.put("a", &entry(Status::Failed, "v")).await.unwrap();
+        assert!(r2 > r1);
+        let (got, _) = s.get("a").await.unwrap().unwrap();
+        assert_eq!(got.status, Status::Failed);
+    }
+
+    #[tokio::test]
+    async fn concurrent_cas_has_exactly_one_winner() {
+        // Two tasks both read rev R and both update at R: exactly one wins, the
+        // other Conflicts. This is the FR-005 double-enqueue guard.
+        let s = FakeStateStore::default();
+        let r = s.create("a", &entry(Status::Pending, "v")).await.unwrap();
+        let (s1, s2) = (s.clone(), s.clone());
+        let t1 =
+            tokio::spawn(async move { s1.update("a", &entry(Status::InProgress, "v"), r).await });
+        let t2 = tokio::spawn(async move { s2.update("a", &entry(Status::Done, "v"), r).await });
+        let (a, b) = (t1.await.unwrap(), t2.await.unwrap());
+        assert_eq!(
+            [a.is_ok(), b.is_ok()].iter().filter(|x| **x).count(),
+            1,
+            "exactly one CAS at the same revision must win"
+        );
+        assert!(a.is_err() || b.is_err());
+    }
+
+    fn sample_job() -> Job {
+        Job {
             id: ulid::Ulid::from_parts(1, 1),
             path: "/x.mkv".into(),
             version: "1:1".into(),
@@ -343,11 +389,16 @@ mod tests {
             )
             .unwrap(),
             enqueued_at: OffsetDateTime::UNIX_EPOCH,
-        };
-        q.publish("jobs.transcode.local", &job).await.unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn fake_publisher_records_jobs() {
+        let q = FakeJobPublisher::default();
+        assert!(q.is_empty());
+        q.publish(&sample_job()).await.unwrap();
         let pubs = q.published();
         assert_eq!(pubs.len(), 1);
-        assert_eq!(pubs[0].0, "jobs.transcode.local");
-        assert_eq!(pubs[0].1.path, "/x.mkv");
+        assert_eq!(pubs[0].path, "/x.mkv");
     }
 }

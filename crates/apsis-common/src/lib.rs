@@ -21,5 +21,6 @@ pub use nats::{ConsumerTuning, bind_job_consumer, connect, ensure_topology};
 pub use pathmap::PathMap;
 pub use schema::{Job, Outcome, StateEntry, Status, TranscodeResult};
 pub use store::{
-    FakeQueue, FakeStateStore, JobPublisher, KvStateStore, NatsPublisher, StateStore, StoreError,
+    FakeJobPublisher, FakeStateStore, JobPublisher, KvStateStore, NatsPublisher, StateStore,
+    StoreError,
 };
