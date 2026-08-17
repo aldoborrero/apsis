@@ -65,9 +65,12 @@ max_ack_pending: <worker.concurrency>   # broker-side mirror of the local Semaph
 - **Poison → dead-letter.** After `max_deliver` failed attempts the message is terminated;
   the coordinator (watching for `MaxDeliver`/`term`) writes `Failed@version` with
   `last_error`. It is not retried until the file's `mtime:size` changes (FR-009).
-- **`nak` vs `term`.** A *retriable* failure (VAAPI glitch handled by CPU fallback inside
-  the job; transient I/O) → `nak` (redeliver). A *terminal* failure (verify says the source
-  is unencodable, output larger than input) → `term` immediately (no wasted retries).
+- **retriable vs terminal.** A *retriable* failure (transient I/O; VAAPI glitch not already
+  handled by the in-job CPU fallback) → `nak` (redeliver, subject to `backoff`/`max_deliver`).
+  A *terminal* failure (verify says the source is unencodable, output larger than input) →
+  write `Failed@version` to KV, then **`ack`** to remove it from the WorkQueue (no wasted
+  retries). Note: `async-nats` 0.42's `AckKind` has no `Term`; ack-after-recording is the
+  terminal path, and `max_deliver` still dead-letters a job that keeps `nak`-ing.
 
 ## Message schemas (JSON)
 

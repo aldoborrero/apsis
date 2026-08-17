@@ -40,18 +40,18 @@ Everything below blocks all user stories.
   (libraries + `[profiles]` = `apsis_engine::Profile` + `[reconcile]`), `WorkerConfig`
   (concurrency, `path_map`, ffmpeg/ffprobe paths, `[verify]`, `[[backend]]`), loaded via
   `figment` (file+env) with `garde` validation; **fail-fast** on invalid (FR-012).
-- [ ] T006 [P] Define JetStream constants + idempotent provisioning in
+- [X] T006 [P] Define JetStream constants + idempotent provisioning in
   `crates/apsis-common/src/nats.rs`: stream `APSIS_JOBS` (WorkQueue), subjects, KV bucket
   `transcode_state`, consumer `worker-local` config (`ack_wait`, `max_deliver`, `backoff`,
   `max_ack_pending`); `ensure_topology(&Context)` create-if-absent (contract §invariant 4).
-- [ ] T007 Define the `Queue` + `StateStore` traits in
+- [X] T007 Define the `Queue` + `StateStore` traits in
   `crates/apsis-common/src/store.rs` (publish job / pull+ack / nak / term; KV get / CAS-put),
   with a NATS-backed impl **and** an in-memory fake for unit tests (needs T004, T006).
 - [X] T008 [P] `path_map` translation (coordinator path → local mount, longest-prefix) in
   `crates/apsis-common/src/pathmap.rs` — identity on rhea; real on sirius (spec 003).
 - [X] T009 [P] `version_token(path) -> "mtime:size"` + `is_video(path)` helpers in
   `crates/apsis-common/src/fsutil.rs`; unit-tested.
-- [ ] T010 Re-export the public surface from `crates/apsis-common/src/lib.rs`; `cargo build`
+- [X] T010 Re-export the public surface from `crates/apsis-common/src/lib.rs`; `cargo build`
   the three crates green (needs T004–T009).
 
 **Checkpoint**: shared types compile; JetStream topology provisions against a dev server.

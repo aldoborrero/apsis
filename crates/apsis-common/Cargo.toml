@@ -16,6 +16,10 @@ time = { version = "0.3", features = ["serde-well-known"] }
 figment = { version = "0.10", features = ["toml", "env"] }
 garde = { version = "0.23", features = ["derive"] }
 humantime-serde = "1"
+async-nats = "0.42"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"] }
+async-trait = "0.1"
+bytes = "1"
 
 [lints]
 workspace = true
