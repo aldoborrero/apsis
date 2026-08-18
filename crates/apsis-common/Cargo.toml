@@ -16,6 +16,7 @@ time = { version = "0.3", features = ["serde-well-known"] }
 figment = { version = "0.10", features = ["toml"] }
 garde = { version = "0.23", features = ["derive"] }
 humantime-serde = "1"
+humantime = "2"
 async-nats = "0.42"
 async-trait = "0.1"
 bytes = "1"

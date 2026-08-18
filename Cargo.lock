@@ -21,6 +21,7 @@ dependencies = [
  "bytes",
  "figment",
  "garde",
+ "humantime",
  "humantime-serde",
  "serde",
  "serde_json",

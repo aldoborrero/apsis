@@ -139,12 +139,15 @@ intact + redelivered; an unencodable file → `Failed` after `max_deliver`.
 
 ### Tests (gated on a real `nats-server`, `APSIS_TEST_NATS`)
 
-- [ ] T028 [P] [US3] `tests/crash_redeliver.rs`: `kill -9` the worker mid-transcode → after
-  `AckWait` the job is redelivered and completes; original byte-identical throughout across
-  N trials (SC-003).
-- [ ] T029 [P] [US3] `tests/dead_letter.rs`: an always-failing job is redelivered exactly
-  `max_deliver` times then lands `Failed@version`; a subsequent `mtime:size` change re-queues
-  it (SC-004).
+- [X] T028 [P] [US3] `tests/crash_safety.rs::crash_mid_transcode_redelivers_and_completes`:
+  SIGKILL the built worker mid-transcode → after the (config-shortened) lease the job is
+  redelivered, a fresh worker re-claims the abandoned `InProgress` and completes; the original
+  is byte-identical across the crash (SC-003). Gated on `APSIS_TEST_NATS` + ffmpeg.
+- [X] T029 [P] [US3] `tests/crash_safety.rs::poison_job_dead_letters_after_max_deliver`: a
+  retriable-forever job (bogus ffmpeg → spawn error) is redelivered exactly `max_deliver`
+  times then lands `Failed@version` (SC-004); asserted from the worker's redelivery log. The
+  `mtime:size`-change re-queue is the coordinator's version gate (covered by the reconcile
+  unit tests). Gated on `APSIS_TEST_NATS`.
 
 **Checkpoint**: all three P1/P2 stories independently functional and safe.
 

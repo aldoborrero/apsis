@@ -479,10 +479,14 @@ mod tests {
             ..Default::default()
         };
         let file_plan = plan(src.to_str().unwrap(), &probe, &profile);
+        // Real change token: atomic_replace's changed-source guard verifies the
+        // installed file still matches it, so a fake version would read as
+        // superseded and never install.
+        let version = apsis_common::version_token(&src).unwrap();
         let job = Job {
             id: ulid::Ulid::new(),
             path: src.to_string_lossy().into_owned(),
-            version: "1:1".into(),
+            version: version.clone(),
             profile: "test".into(),
             plan: file_plan,
             profile_config: profile,
@@ -503,7 +507,7 @@ mod tests {
             .unwrap()
             .expect("state written");
         assert_eq!(entry.status, Status::Done);
-        assert_eq!(entry.version, "1:1");
+        assert_eq!(entry.version, version);
         std::fs::remove_dir_all(&dir).ok();
     }
 }

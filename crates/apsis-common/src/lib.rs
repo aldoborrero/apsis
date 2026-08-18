@@ -13,8 +13,8 @@ pub mod schema;
 pub mod store;
 
 pub use config::{
-    BackendConfig, BackendKind, ConfigError, Library, Reconcile, SchedulerConfig, VerifyConfig,
-    WorkerConfig, load_scheduler, load_worker,
+    BackendConfig, BackendKind, ConfigError, ConsumerConfig, Library, Reconcile, SchedulerConfig,
+    VerifyConfig, WorkerConfig, load_scheduler, load_worker,
 };
 pub use fsutil::{DEFAULT_VIDEO_EXTENSIONS, is_video, version_token};
 pub use nats::{ConsumerTuning, bind_job_consumer, connect, ensure_topology};

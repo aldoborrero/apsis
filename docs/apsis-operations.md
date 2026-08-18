@@ -63,6 +63,11 @@ stall_timeout = "2m"      # kill ffmpeg if it emits no progress for this long
 duration_tolerance = "1s"
 max_size_ratio     = 1.5   # reject a bloated / larger-than-input output
 
+[consumer]              # JetStream lease/retry (optional; prod defaults shown)
+ack_wait    = "30m"     # per-delivery lease; a long encode heartbeats within it
+max_deliver = 4         # deliveries before dead-lettering Failed@version
+backoff     = ["1m", "5m", "15m"]   # redelivery schedule; [] = immediate
+
 [[backend]]              # first = primary
 kind   = "vaapi"
 device = "/dev/dri/renderD128"

@@ -131,9 +131,72 @@ pub struct WorkerConfig {
     pub stall_timeout: Duration,
     #[serde(default)]
     pub verify: VerifyConfig,
+    /// `JetStream` consumer lease/retry tuning (`[consumer]`). Defaults match the
+    /// production 30-min lease / 4 deliveries / 1-5-15-min backoff; operators (and
+    /// the gated crash tests) override it for a faster lease/redelivery.
+    #[garde(dive)]
+    #[serde(default)]
+    pub consumer: ConsumerConfig,
     #[garde(dive)]
     #[serde(rename = "backend", default)] // TOML `[[backend]]`; empty → Empty("backend")
     pub backends: Vec<BackendConfig>,
+}
+
+/// `[consumer]` — the worker's pull-consumer lease/retry knobs, mapped to a
+/// [`crate::nats::ConsumerTuning`]. Split out so lease timing is operator-tunable
+/// (and testable) instead of hardcoded.
+#[derive(Debug, Clone, Deserialize, Validate)]
+#[serde(deny_unknown_fields)]
+#[garde(allow_unvalidated)]
+pub struct ConsumerConfig {
+    /// Lease per delivery; a legitimately long encode heartbeats within it so it
+    /// isn't redelivered mid-run (contract §delivery).
+    #[serde(with = "humantime_serde", default = "d_ack_wait")]
+    pub ack_wait: Duration,
+    /// Deliveries before a job is dead-lettered `Failed@version` (FR-009).
+    #[garde(range(min = 1))]
+    #[serde(default = "d_max_deliver")]
+    pub max_deliver: i64,
+    /// Redelivery backoff schedule (humantime strings, e.g. `["1m","5m"]`); an
+    /// empty list means immediate redelivery.
+    #[serde(default = "d_backoff", deserialize_with = "de_durations")]
+    pub backoff: Vec<Duration>,
+}
+
+impl Default for ConsumerConfig {
+    fn default() -> Self {
+        Self {
+            ack_wait: d_ack_wait(),
+            max_deliver: d_max_deliver(),
+            backoff: d_backoff(),
+        }
+    }
+}
+
+impl ConsumerConfig {
+    /// Build the runtime [`crate::nats::ConsumerTuning`]; `max_ack_pending` mirrors
+    /// the worker's `concurrency` (the broker-side bound of the local semaphore).
+    #[must_use]
+    pub fn tuning(&self, concurrency: u32) -> crate::nats::ConsumerTuning {
+        crate::nats::ConsumerTuning {
+            ack_wait: self.ack_wait,
+            max_deliver: self.max_deliver,
+            max_ack_pending: i64::from(concurrency.max(1)),
+            backoff: self.backoff.clone(),
+        }
+    }
+}
+
+/// Deserialize a list of humantime strings into `Vec<Duration>` (so a bad string
+/// fails config load, not at consumer-bind time).
+fn de_durations<'de, D>(d: D) -> Result<Vec<Duration>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let raw = Vec::<String>::deserialize(d)?;
+    raw.iter()
+        .map(|s| humantime::parse_duration(s).map_err(serde::de::Error::custom))
+        .collect()
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
@@ -199,6 +262,19 @@ fn d_ffprobe() -> PathBuf {
 }
 fn d_stall_timeout() -> Duration {
     Duration::from_mins(2)
+}
+fn d_ack_wait() -> Duration {
+    Duration::from_mins(30)
+}
+fn d_max_deliver() -> i64 {
+    4
+}
+fn d_backoff() -> Vec<Duration> {
+    vec![
+        Duration::from_mins(1),
+        Duration::from_mins(5),
+        Duration::from_mins(15),
+    ]
 }
 fn d_dur_tol() -> Duration {
     Duration::from_secs(1)
