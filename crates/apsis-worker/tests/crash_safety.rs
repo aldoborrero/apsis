@@ -15,6 +15,7 @@ use std::sync::OnceLock;
 use std::time::Duration;
 
 use apsis_common::nats::{CONSUMER_NAME, STREAM_NAME};
+use apsis_common::testkit::{ffmpeg_available, sample_h264};
 use apsis_common::{
     ConsumerTuning, Job, JobPublisher, KvStateStore, NatsPublisher, StateEntry, StateStore, Status,
     connect, ensure_topology,
@@ -36,13 +37,6 @@ fn topology_lock() -> &'static tokio::sync::Mutex<()> {
 
 fn nats_url() -> String {
     std::env::var("APSIS_TEST_NATS").unwrap_or_else(|_| "nats://127.0.0.1:4222".to_string())
-}
-
-fn ffmpeg_available() -> bool {
-    std::process::Command::new("ffmpeg")
-        .arg("-version")
-        .output()
-        .is_ok()
 }
 
 /// Fast tuning for the initial provision — matches the `[consumer]` block the
@@ -182,25 +176,7 @@ async fn crash_mid_transcode_redelivers_and_completes() {
     // the claim and kill (hevc is slow — 6s @ 480p never finishes sub-second).
     let dir = std::env::temp_dir().join(format!("apsis-crash-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
-    let src = dir.join("clip.mkv");
-    let made = std::process::Command::new("ffmpeg")
-        .args([
-            "-y",
-            "-f",
-            "lavfi",
-            "-i",
-            "testsrc=d=6:s=640x480",
-            "-c:v",
-            "libx264",
-        ])
-        .arg(&src)
-        .output()
-        .unwrap();
-    assert!(
-        made.status.success(),
-        "gen: {}",
-        String::from_utf8_lossy(&made.stderr)
-    );
+    let src = sample_h264(&dir, "clip.mkv", 6, "640x480");
     let original = std::fs::read(&src).unwrap();
 
     // Fast lease so the killed worker's job redelivers in ~5s (the worker binary

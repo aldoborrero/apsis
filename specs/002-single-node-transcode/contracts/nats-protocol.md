@@ -22,7 +22,7 @@ outstanding work, not a log. Exactly one consumer per subject may bind (enforced
 | Subject | Direction | Payload | Notes |
 |---------|-----------|---------|-------|
 | `jobs.transcode.local` | coordinator → worker | `Job` (JSON) | single-node; 003 adds `jobs.transcode.{vaapi,nvenc}` for routing |
-| `jobs.result` | worker → coordinator/metrics | `TranscodeResult` (JSON) | core publish (not in the work stream); folded into KV + metrics |
+| `jobs.result` | worker → coordinator/metrics | `TranscodeResult` (JSON) | core publish (not in the work stream); coordinator folds it into metrics + a completion log (worker owns the terminal KV write) |
 
 ## KV bucket `transcode_state`
 
@@ -39,7 +39,14 @@ value:    StateEntry (JSON)
 - **Change gate:** before probing, the coordinator reads the entry; if `version` matches the
   file's current `mtime:size` and `status ∈ {done, pending, in_progress, failed}`, it
   short-circuits (no probe, no enqueue).
-- **Fold result:** on `TranscodeResult`, write `Done`/`Failed` with the same `version`.
+- **Terminal write (worker-owned).** The implementation converged on the **worker** writing
+  the terminal `Done`/`Failed@version` in `finish()` — including `Failed@version` on
+  dead-letter — so terminal state never depends on the coordinator being alive (crash-safe).
+  It is the single terminal writer, version-guarded against a newer claim.
+- **Fold result (observability).** The worker also publishes `TranscodeResult` to `jobs.result`;
+  the coordinator subscribes and folds it into metrics (`apsis_results_total{outcome}`) + a
+  structured completion log — history without a separate DB. This is **not** a second KV
+  writer; it never touches `transcode_state`.
 
 ## Consumer `worker-local`
 
@@ -62,9 +69,9 @@ max_ack_pending: <worker.concurrency>   # broker-side mirror of the local Semaph
 - **Crash → redeliver.** Worker dies mid-transcode → no `ack` → after `AckWait` the job is
   redelivered. The temp file (`.apsis-tmp-<ulid>`) is discarded on the retry; the original
   was never touched. (US3 / SC-003.)
-- **Poison → dead-letter.** After `max_deliver` failed attempts the message is terminated;
-  the coordinator (watching for `MaxDeliver`/`term`) writes `Failed@version` with
-  `last_error`. It is not retried until the file's `mtime:size` changes (FR-009).
+- **Poison → dead-letter.** On the `max_deliver`-th delivery the **worker** itself writes
+  `Failed@version` with `last_error` and acks (drains the message) — it doesn't wait for a
+  broker `term`/advisory. It is not retried until the file's `mtime:size` changes (FR-009).
 - **retriable vs terminal.** A *retriable* failure (transient I/O; VAAPI glitch not already
   handled by the in-job CPU fallback) → `nak` (redeliver, subject to `backoff`/`max_deliver`).
   A *terminal* failure (verify says the source is unencodable, output larger than input) →

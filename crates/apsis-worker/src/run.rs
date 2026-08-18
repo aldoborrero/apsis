@@ -211,36 +211,13 @@ mod tests {
     /// devshell); skips gracefully otherwise.
     #[tokio::test]
     async fn runs_a_real_cpu_transcode() {
-        if std::process::Command::new("ffmpeg")
-            .arg("-version")
-            .output()
-            .is_err()
-        {
+        if !apsis_common::testkit::ffmpeg_available() {
             eprintln!("skipping: ffmpeg not on PATH");
             return;
         }
         let dir = std::env::temp_dir().join(format!("apsis-run-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
-        let src = dir.join("src.mkv");
-        // Generate a tiny h264 source.
-        let made = std::process::Command::new("ffmpeg")
-            .args([
-                "-y",
-                "-f",
-                "lavfi",
-                "-i",
-                "testsrc=d=1:s=128x128",
-                "-c:v",
-                "libx264",
-            ])
-            .arg(&src)
-            .output()
-            .unwrap();
-        assert!(
-            made.status.success(),
-            "gen: {}",
-            String::from_utf8_lossy(&made.stderr)
-        );
+        let src = apsis_common::testkit::sample_h264(&dir, "src.mkv", 1, "128x128");
 
         let (p, profile) = hevc_encode_plan(src.to_str().unwrap());
         let cpu = CpuBackend {

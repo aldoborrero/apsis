@@ -79,7 +79,9 @@ pub struct StateEntry {
     pub last_error: Option<String>,
 }
 
-/// Worker → `jobs.result`; folded into KV and metrics.
+/// Worker → `jobs.result` (core publish). The coordinator folds it into metrics +
+/// a completion log; the worker owns the terminal KV write, so this is the
+/// observability channel, not a second `transcode_state` writer.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TranscodeResult {
     pub job_id: Ulid,

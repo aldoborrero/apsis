@@ -98,7 +98,8 @@ Both daemons expose a Prometheus scrape endpoint at `APSIS_METRICS_ADDR`:
 
 - worker `:9101/metrics` — `apsis_jobs_total{outcome}`, `apsis_transcode_seconds`,
   `apsis_used_fallback_total`, `apsis_bytes_saved_total`, `apsis_verify_failures_total`
-- coordinator `:9100/metrics` — `apsis_reconcile_seconds`, `apsis_reconcile_enqueued_total`
+- coordinator `:9100/metrics` — `apsis_reconcile_seconds`, `apsis_reconcile_enqueued_total`,
+  `apsis_results_total{outcome}` (its view of worker completions, from the `jobs.result` feed)
 
 Point vmagent at both; dashboards go in the hub Grafana.
 

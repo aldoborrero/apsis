@@ -14,9 +14,10 @@ use std::path::Path;
 use std::process::ExitCode;
 
 use apsis_common::{
-    ConsumerTuning, KvStateStore, NatsPublisher, SchedulerConfig, connect, ensure_topology,
-    load_scheduler, version_token,
+    ConsumerTuning, KvStateStore, NatsPublisher, Outcome, SchedulerConfig, TranscodeResult,
+    connect, ensure_topology, load_scheduler, version_token,
 };
+use futures::StreamExt;
 
 use std::time::Duration;
 
@@ -53,9 +54,14 @@ async fn serve() -> Result<(), Fatal> {
     install_metrics("0.0.0.0:9100")?;
 
     let cfg = load_scheduler(Path::new(&cfg_path))?;
-    let (_client, ctx) = connect(&nats_url).await?;
+    let (client, ctx) = connect(&nats_url).await?;
     let tuning = ConsumerTuning::for_concurrency(1);
     let kv = ensure_topology(&ctx, &tuning).await?;
+
+    // Consume the worker's result feed for central metrics + a completion log
+    // (T023). The worker owns the terminal KV write — it records `Failed@version`
+    // itself on dead-letter, so this is the observability half, not a 2nd writer.
+    tokio::spawn(consume_results(client));
 
     // Startup: sweep crash-orphaned temps (FR-008) before the first reconcile.
     for lib in &cfg.libraries {
@@ -121,6 +127,45 @@ async fn reconcile_all(reconciler: &Coordinator, cfg: &SchedulerConfig) {
     }
     metrics::histogram!("apsis_reconcile_seconds").record(started.elapsed().as_secs_f64());
     metrics::counter!("apsis_reconcile_enqueued_total").increment(enqueued);
+}
+
+/// Subscribe to the worker's `jobs.result` core subject and fold each result into
+/// coordinator-side metrics + a structured completion log — "history without a
+/// separate DB" (contract §fold-result). Terminal KV state is the worker's to
+/// write; this never writes KV, so there is no second terminal writer.
+///
+/// A subscription/decode error is logged, not fatal: losing the result feed costs
+/// observability, never correctness (the worker's KV write stands).
+async fn consume_results(client: async_nats::Client) {
+    let mut sub = match client.subscribe(apsis_common::nats::SUBJECT_RESULT).await {
+        Ok(sub) => sub,
+        Err(e) => {
+            tracing::error!(error = %e, "could not subscribe to jobs.result; no completion feed");
+            return;
+        }
+    };
+    while let Some(msg) = sub.next().await {
+        let Ok(result) = serde_json::from_slice::<TranscodeResult>(&msg.payload) else {
+            tracing::warn!("undecodable transcode result dropped");
+            continue;
+        };
+        let outcome = match result.outcome {
+            Outcome::Done => "done",
+            Outcome::Failed => "failed",
+        };
+        metrics::counter!("apsis_results_total", "outcome" => outcome).increment(1);
+        tracing::info!(
+            job_id = %result.job_id,
+            path = %result.path,
+            outcome,
+            used_fallback = result.used_fallback,
+            in_bytes = result.input_bytes,
+            out_bytes = result.output_bytes,
+            secs = result.duration_secs,
+            "transcode result",
+        );
+    }
+    tracing::warn!("jobs.result subscription ended");
 }
 
 /// Install the Prometheus exporter (scrape endpoint at `APSIS_METRICS_ADDR`).

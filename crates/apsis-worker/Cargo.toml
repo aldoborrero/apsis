@@ -30,5 +30,10 @@ tokio = { version = "1", features = [
 ] }
 ulid = "1"
 
+[dev-dependencies]
+# Enable the shared clip generators for the worker's unit + integration tests only
+# (off in a normal build, so they never ship in the binary).
+apsis-common = { path = "../apsis-common", features = ["testkit"] }
+
 [lints]
 workspace = true

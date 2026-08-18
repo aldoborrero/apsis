@@ -441,12 +441,7 @@ mod tests {
     use apsis_engine::{Probe, Profile, StreamInfo, plan};
     use std::time::Duration;
 
-    fn ffmpeg_available() -> bool {
-        std::process::Command::new("ffmpeg")
-            .arg("-version")
-            .output()
-            .is_ok()
-    }
+    use apsis_common::testkit::{ffmpeg_available, sample_h264};
 
     fn cpu_worker_config() -> WorkerConfig {
         // CPU-only (no VAAPI device in CI/sandbox); identity path_map + defaults.
@@ -476,20 +471,7 @@ mod tests {
         // Generate a tiny h264 clip and plan it to hevc (encode).
         let dir = std::env::temp_dir().join(format!("apsis-e2e-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
-        let src = dir.join("clip.mkv");
-        std::process::Command::new("ffmpeg")
-            .args([
-                "-y",
-                "-f",
-                "lavfi",
-                "-i",
-                "testsrc=d=1:s=128x128",
-                "-c:v",
-                "libx264",
-            ])
-            .arg(&src)
-            .output()
-            .unwrap();
+        let src = sample_h264(&dir, "clip.mkv", 1, "128x128");
         let profile: Profile = serde_json::from_str(
             r#"{"video":{"codec":"hevc","skip_codecs":[]},"audio":{},"subtitles":{},"output":{"container":"mkv"}}"#,
         )

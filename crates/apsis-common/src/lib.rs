@@ -12,6 +12,8 @@ pub mod obs;
 pub mod pathmap;
 pub mod schema;
 pub mod store;
+#[cfg(feature = "testkit")]
+pub mod testkit;
 
 pub use config::{
     BackendConfig, BackendKind, ConfigError, ConsumerConfig, Library, Reconcile, SchedulerConfig,

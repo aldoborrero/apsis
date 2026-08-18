@@ -41,6 +41,7 @@ dependencies = [
  "apsis-engine",
  "async-nats",
  "async-trait",
+ "futures",
  "metrics",
  "metrics-exporter-prometheus",
  "serde_json",

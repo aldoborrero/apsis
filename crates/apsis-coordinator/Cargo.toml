@@ -10,6 +10,7 @@ description = "apsis coordinator: scan / reconcile / enqueue"
 apsis-common = { path = "../apsis-common" }
 apsis-engine = { path = "../apsis-engine" }
 async-nats = "0.42"
+futures = "0.3"
 metrics = "0.24"
 metrics-exporter-prometheus = { version = "0.18", default-features = false, features = ["http-listener"] }
 async-trait = "0.1"

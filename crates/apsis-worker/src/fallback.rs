@@ -75,31 +75,13 @@ mod tests {
     /// fallback must still produce a valid output (spec AS-3). Requires ffmpeg.
     #[tokio::test]
     async fn vaapi_failure_falls_back_to_cpu() {
-        if std::process::Command::new("ffmpeg")
-            .arg("-version")
-            .output()
-            .is_err()
-        {
+        if !apsis_common::testkit::ffmpeg_available() {
             eprintln!("skipping: ffmpeg not on PATH");
             return;
         }
         let dir = std::env::temp_dir().join(format!("apsis-fallback-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
-        let src = dir.join("src.mkv");
-        let made = std::process::Command::new("ffmpeg")
-            .args([
-                "-y",
-                "-f",
-                "lavfi",
-                "-i",
-                "testsrc=d=1:s=128x128",
-                "-c:v",
-                "libx264",
-            ])
-            .arg(&src)
-            .output()
-            .unwrap();
-        assert!(made.status.success());
+        let src = apsis_common::testkit::sample_h264(&dir, "src.mkv", 1, "128x128");
 
         let (p, profile) = hevc_encode_plan(src.to_str().unwrap());
         let vaapi = VaapiBackend {
@@ -132,30 +114,13 @@ mod tests {
 
     #[tokio::test]
     async fn no_fallback_returns_primary_outcome() {
-        if std::process::Command::new("ffmpeg")
-            .arg("-version")
-            .output()
-            .is_err()
-        {
+        if !apsis_common::testkit::ffmpeg_available() {
             eprintln!("skipping: ffmpeg not on PATH");
             return;
         }
         let dir = std::env::temp_dir().join(format!("apsis-nofb-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
-        let src = dir.join("src.mkv");
-        std::process::Command::new("ffmpeg")
-            .args([
-                "-y",
-                "-f",
-                "lavfi",
-                "-i",
-                "testsrc=d=1:s=128x128",
-                "-c:v",
-                "libx264",
-            ])
-            .arg(&src)
-            .output()
-            .unwrap();
+        let src = apsis_common::testkit::sample_h264(&dir, "src.mkv", 1, "128x128");
 
         let (p, profile) = hevc_encode_plan(src.to_str().unwrap());
         let cpu = CpuBackend {

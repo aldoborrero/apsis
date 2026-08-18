@@ -23,6 +23,11 @@ async-nats = "0.42"
 async-trait = "0.1"
 bytes = "1"
 
+[features]
+# Test-only clip generators, shared across the worker's unit + integration tests.
+# Off by default so nothing here compiles into a release build.
+testkit = []
+
 [dev-dependencies]
 # Only the tests drive an async runtime (#[tokio::test]); the library itself uses
 # std::sync primitives and awaits async-nats futures without spawning.

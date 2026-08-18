@@ -112,8 +112,11 @@ only non-compliant files queued.
 - [X] T022 [US2] `reconcile.rs`: the one-pass algorithm (research/design §7) — version-cache
   gate (skip unchanged, no probe) → `apsis_engine::plan` → `should_skip` ? KV `Done` : KV
   `Pending` CAS + publish `Job` (FR-004/005). Needs T020, T021, and common T006/T007.
-- [ ] T023 [US2] Fold `jobs.result` back into KV `Done`/`Failed@version` in the coordinator
-  (or a small result-consumer task); updates history without a separate DB.
+- [X] T023 [US2] Result-consumer task in the coordinator: subscribes to the core `jobs.result`
+  subject and folds each `TranscodeResult` into `apsis_results_total{outcome}` + a structured
+  completion log — history without a separate DB. NB the design converged on the **worker**
+  owning the terminal KV write (crash-safe: it records `Failed@version` itself on dead-letter),
+  so this consumer is the observability half, not a second KV writer (contract updated).
 
 ### Tests
 
@@ -179,8 +182,10 @@ intact + redelivered; an unencodable file → `Failed` after `max_deliver`.
   the binary refuse to start with a clear error; add a rejects-bad-config test (FR-012).
 - [X] T034 [P] `cargo clippy --workspace --all-targets -- -D warnings` + `cargo fmt` clean
   in the nix devshell; no orchestration deps leak into `apsis-engine`.
-- [ ] T035 [P] Sample-clip test helpers (`testsrc`/`sine` generators) shared across the
-  worker tests (quickstart §test locally).
+- [X] T035 [P] Shared sample-clip helpers (`ffmpeg_available`, `sample_h264`) in
+  `apsis-common`'s `testkit` feature (off in release builds), used by the worker's unit
+  (`run`/`fallback`/`worker`) and integration (`crash_safety`) tests instead of a hand-rolled
+  `ffmpeg -f lavfi` in each.
 - [X] T036 [P] Update `docs/` (CHANGELOG + a short `docs/services/apsis.md` runbook) and
   validate the `quickstart.md` commands against the built binaries.
 
