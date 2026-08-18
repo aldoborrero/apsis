@@ -18,6 +18,7 @@ use async_nats::jetstream::AckKind;
 use async_nats::jetstream::Context;
 use futures::StreamExt;
 use time::OffsetDateTime;
+use tracing::{Span, error, info, instrument, warn};
 
 use crate::fallback::transcode;
 use crate::replace::ReplaceOutcome;
@@ -93,7 +94,7 @@ impl Worker {
         while let Some(msg) = messages.next().await {
             let msg = msg?;
             let Ok(job) = serde_json::from_slice::<Job>(&msg.payload) else {
-                eprintln!("apsis-worker: undecodable job dropped");
+                warn!("undecodable job dropped");
                 msg.ack().await?; // will never decode → drain
                 continue;
             };
@@ -126,10 +127,7 @@ impl Worker {
                 Err(e) if attempt >= max_deliver => {
                     // Dead-letter (FR-009): record Failed@version so the version gate
                     // suppresses re-queue until the file changes, then drain.
-                    eprintln!(
-                        "apsis-worker: job {} dead-lettered after {attempt}: {e}",
-                        job.id
-                    );
+                    error!(job_id = %job.id, attempt, error = %e, "job dead-lettered");
                     let _ = self
                         .finish(
                             &job,
@@ -145,10 +143,7 @@ impl Worker {
                     msg.ack().await?;
                 }
                 Err(e) => {
-                    eprintln!(
-                        "apsis-worker: job {} retriable ({attempt}/{max_deliver}): {e}",
-                        job.id
-                    );
+                    warn!(job_id = %job.id, attempt, max_deliver, error = %e, "job retriable; will redeliver");
                     msg.ack_with(AckKind::Nak(None)).await?; // redeliver
                 }
             }
@@ -159,9 +154,17 @@ impl Worker {
     /// Process one job end-to-end. Returns the terminal [`Outcome`]; a retriable
     /// error (broker/IO) is returned as `Err` so the caller naks.
     #[allow(clippy::too_many_lines)] // a faithful sequential pipeline reads best whole
+    #[instrument(
+        name = "job",
+        skip_all,
+        fields(job_id = %job.id, path = %job.path, version = %job.version,
+               backend = tracing::field::Empty, outcome = tracing::field::Empty)
+    )]
     pub(crate) async fn process(&self, job: &Job) -> Result<Outcome> {
         let key = job.path.as_str();
         if !self.claim(key, job).await? {
+            Span::current().record("outcome", "claim_lost");
+            info!("claim lost or stale version; dropping");
             return Ok(Outcome::Failed); // stale version or lost claim → drop
         }
 
@@ -181,6 +184,14 @@ impl Worker {
             self.stall_timeout,
         )
         .await?;
+
+        // Which backend produced the surviving output (for the span / logs).
+        let backend = if t.used_fallback {
+            self.fallback.as_deref().map_or("?", Backend::name)
+        } else {
+            self.primary.name()
+        };
+        Span::current().record("backend", backend);
 
         // Transcode failed on all backends → terminal, record + drop the temp.
         if !t.outcome.success {
@@ -251,9 +262,10 @@ impl Worker {
         ) {
             Ok(ReplaceOutcome::Installed) => {}
             Ok(ReplaceOutcome::Superseded) => {
-                eprintln!(
-                    "apsis-worker: source {local_in} changed during transcode (v{} superseded); discarding output",
-                    job.version
+                Span::current().record("outcome", "superseded");
+                warn!(
+                    source = %local_in,
+                    "source changed during transcode; discarding stale output"
                 );
                 let _ = std::fs::remove_file(&t.outcome.temp);
                 return Ok(Outcome::Failed);
@@ -359,6 +371,19 @@ impl Worker {
             metrics::counter!("apsis_bytes_saved_total").increment(in_bytes - out_bytes);
         }
 
+        // Terminal outcome on the job span. `finish` runs inside `process`'s span.
+        Span::current().record("outcome", outcome_str);
+        match outcome {
+            Outcome::Done => info!(
+                used_fallback,
+                in_bytes,
+                out_bytes,
+                secs = duration_secs,
+                "transcoded and replaced"
+            ),
+            Outcome::Failed => warn!(error = ?error, secs = duration_secs, "job failed"),
+        }
+
         // Version-guarded terminal write: never regress a newer claim. If the key
         // was superseded (a different version now owns it — the coordinator
         // re-planned a changed file), leave that newer state alone; we still emit
@@ -367,9 +392,9 @@ impl Worker {
         let superseded =
             matches!(self.kv.get(key).await?, Some((cur, _)) if cur.version != job.version);
         if superseded {
-            eprintln!(
-                "apsis-worker: {key} superseded (v{} now stale); skipping terminal write",
-                job.version
+            warn!(
+                key,
+                "state superseded by a newer version; skipping terminal write"
             );
         } else {
             self.kv

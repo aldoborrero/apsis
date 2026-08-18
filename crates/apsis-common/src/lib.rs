@@ -8,6 +8,7 @@
 pub mod config;
 pub mod fsutil;
 pub mod nats;
+pub mod obs;
 pub mod pathmap;
 pub mod schema;
 pub mod store;
@@ -18,6 +19,7 @@ pub use config::{
 };
 pub use fsutil::{DEFAULT_VIDEO_EXTENSIONS, is_video, version_token};
 pub use nats::{ConsumerTuning, bind_job_consumer, connect, ensure_topology};
+pub use obs::init_tracing;
 pub use pathmap::PathMap;
 pub use schema::{Job, Outcome, StateEntry, Status, TranscodeResult};
 pub use store::{

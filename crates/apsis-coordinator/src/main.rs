@@ -49,6 +49,7 @@ async fn serve() -> Result<(), Fatal> {
         std::env::var("NATS_URL").unwrap_or_else(|_| "nats://127.0.0.1:4222".to_string());
     let ffprobe = std::env::var("APSIS_FFPROBE").unwrap_or_else(|_| "ffprobe".to_string());
 
+    apsis_common::init_tracing();
     install_metrics("0.0.0.0:9100")?;
 
     let cfg = load_scheduler(Path::new(&cfg_path))?;
@@ -60,10 +61,7 @@ async fn serve() -> Result<(), Fatal> {
     for lib in &cfg.libraries {
         let swept = sweep_temps(Path::new(&lib.path), TEMP_ORPHAN_AGE);
         if swept > 0 {
-            eprintln!(
-                "apsis-coordinator: swept {swept} orphan temp(s) in {}",
-                lib.path
-            );
+            tracing::info!(count = swept, path = %lib.path, "swept crash-orphaned temps");
         }
     }
 
@@ -99,10 +97,7 @@ async fn reconcile_all(reconciler: &Coordinator, cfg: &SchedulerConfig) {
             // The path is the KV key and Job.path; a lossy conversion would mint a
             // key the worker can't open. Skip non-UTF8 paths loudly instead.
             let Some(file) = path.to_str() else {
-                eprintln!(
-                    "apsis-coordinator: skipping non-UTF8 path {}",
-                    path.display()
-                );
+                tracing::warn!(path = %path.display(), "skipping non-UTF8 path");
                 continue;
             };
             let Some(matched) = match_library(&cfg.libraries, file) else {
@@ -120,7 +115,7 @@ async fn reconcile_all(reconciler: &Coordinator, cfg: &SchedulerConfig) {
             {
                 Ok(ReconcileOutcome::Enqueued) => enqueued += 1,
                 Ok(_) => {}
-                Err(e) => eprintln!("apsis-coordinator: reconcile {file}: {e}"),
+                Err(e) => tracing::warn!(file, error = %e, "reconcile failed"),
             }
         }
     }

@@ -24,8 +24,9 @@
   `apsis-common`, `apsis-engine`). Keep workspace lints (`clippy::all` deny, pedantic warn).
 - [X] T002 [P] Add `nats-server` (JetStream) to `nix/devshell.nix` so integration tests and
   local runs have a broker; document the gate env var (`APSIS_TEST_NATS`) in the shell.
-- [ ] T003 [P] Wire `tracing-subscriber` + `metrics-exporter-prometheus` init helpers in
-  `crates/apsis-common/src/observability.rs` (shared by both binaries).
+- [X] T003 [P] Wire `tracing-subscriber` init helper in `crates/apsis-common/src/obs.rs`
+  (`init_tracing`, `RUST_LOG`-driven, no ANSI), called by both binaries. The
+  `metrics-exporter-prometheus` init already lives per-binary (`install_metrics`).
 
 ---
 
@@ -162,8 +163,11 @@ intact + redelivered; an unencodable file → `Failed` after `max_deliver`.
   `apsis_queue_depth`, `apsis_jobs_in_flight`, `apsis_jobs_total{outcome}`,
   `apsis_transcode_seconds`, `apsis_bytes_saved_total`, `apsis_used_fallback_total`,
   `apsis_verify_failures_total`, `apsis_reconcile_seconds`.
-- [ ] T031 [P] [US4] `tracing` spans per job (job_id, path, backend, outcome) in run/verify/
-  replace and the reconcile pass.
+- [X] T031 [P] [US4] `tracing` spans per job/file: the worker wraps `process` in a `job` span
+  (job_id, path, version, backend, outcome — the last two recorded as they're decided); the
+  coordinator wraps `reconcile_file` in a `reconcile` span (path, version, outcome). Operational
+  `eprintln!`s became structured `info!`/`warn!`/`error!` events (`Backend::name()` supplies the
+  backend field).
 - [X] T032 [P] [US4] Expose the Prometheus endpoint (both binaries) and add a Grafana
   dashboard JSON under `docs/` (or the homelab monitoring path) for the series (SC-005).
 

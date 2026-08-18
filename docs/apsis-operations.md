@@ -100,7 +100,12 @@ Both daemons expose a Prometheus scrape endpoint at `APSIS_METRICS_ADDR`:
   `apsis_used_fallback_total`, `apsis_bytes_saved_total`, `apsis_verify_failures_total`
 - coordinator `:9100/metrics` — `apsis_reconcile_seconds`, `apsis_reconcile_enqueued_total`
 
-Point vmagent at both; dashboards go in the hub Grafana. Structured logs go to stderr.
+Point vmagent at both; dashboards go in the hub Grafana.
+
+**Structured logs** go to stderr via `tracing` (no ANSI). Level is `RUST_LOG` (default `info`);
+each transcode runs inside a `job` span (`job_id`, `path`, `version`, `backend`, `outcome`) and
+each reconcile inside a `reconcile` span (`path`, `version`, `outcome`), so a single job's events
+share those fields. Example: `RUST_LOG=apsis_worker=debug` for verbose worker tracing.
 
 ## Safety model (why it won't corrupt the library)
 

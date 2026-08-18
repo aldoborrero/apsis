@@ -154,6 +154,9 @@ pub trait Backend {
     /// # Errors
     /// Propagates [`EngineError::PlanProbeMismatch`] from [`build_command`].
     fn build(&self, plan: &FilePlan, profile: &Profile) -> Result<FfmpegCommand, EngineError>;
+
+    /// Short identifier for logs/metrics (`"vaapi"`, `"cpu"`).
+    fn name(&self) -> &'static str;
 }
 
 /// VAAPI (AMD) backend: `hevc_vaapi`/`av1_vaapi` with the `sei=hdr` workaround.
@@ -176,6 +179,10 @@ impl Backend for VaapiBackend {
             },
         )
     }
+
+    fn name(&self) -> &'static str {
+        "vaapi"
+    }
 }
 
 /// CPU fallback backend: `libx265`/`libsvtav1`.
@@ -195,6 +202,10 @@ impl Backend for CpuBackend {
                 hardware: None,
             },
         )
+    }
+
+    fn name(&self) -> &'static str {
+        "cpu"
     }
 }
 

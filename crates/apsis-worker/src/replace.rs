@@ -106,10 +106,10 @@ pub(crate) fn atomic_replace(
         // an error, so every step after the rename is best-effort.
         fs::rename(temp, output)?;
         if fs::remove_file(input).is_err() {
-            eprintln!(
-                "apsis-worker: installed {} but could not remove old {} — a duplicate remains",
-                output.display(),
-                input.display()
+            tracing::warn!(
+                installed = %output.display(),
+                old = %input.display(),
+                "installed new file but could not remove the old original — a duplicate remains"
             );
         }
     }

@@ -36,6 +36,7 @@ async fn serve() -> Result<(), Fatal> {
     let nats_url =
         std::env::var("NATS_URL").unwrap_or_else(|_| "nats://127.0.0.1:4222".to_string());
 
+    apsis_common::init_tracing();
     install_metrics("0.0.0.0:9101")?;
 
     let cfg = load_worker(Path::new(&cfg_path))?;

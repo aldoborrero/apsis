@@ -16,6 +16,7 @@ futures = "0.3"
 # renameat2(RENAME_EXCHANGE) for the atomic in-place replace (close the source-
 # changed-during-transcode TOCTOU); safe wrapper so the forbid-unsafe lint holds.
 nix = { version = "0.31", features = ["fs"] }
+tracing = "0.1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "2"

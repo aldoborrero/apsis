@@ -17,6 +17,8 @@ figment = { version = "0.10", features = ["toml"] }
 garde = { version = "0.23", features = ["derive"] }
 humantime-serde = "1"
 humantime = "2"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 async-nats = "0.42"
 async-trait = "0.1"
 bytes = "1"

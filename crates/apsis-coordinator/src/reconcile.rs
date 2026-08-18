@@ -69,6 +69,11 @@ pub(crate) struct Reconciler<S, Q, P> {
 impl<S: StateStore, Q: JobPublisher, P: Prober> Reconciler<S, Q, P> {
     /// Reconcile one file (already known to be a video under `library`) against
     /// `profile`. `ver` is its current `mtime:size` token.
+    #[tracing::instrument(
+        name = "reconcile",
+        skip_all,
+        fields(path, version = ver, outcome = tracing::field::Empty)
+    )]
     pub(crate) async fn reconcile_file(
         &self,
         path: &str,
@@ -81,6 +86,7 @@ impl<S: StateStore, Q: JobPublisher, P: Prober> Reconciler<S, Q, P> {
             && st.version == ver
             && is_handled(st.status)
         {
+            tracing::Span::current().record("outcome", "skipped");
             return Ok(ReconcileOutcome::Skipped);
         }
 
@@ -92,11 +98,13 @@ impl<S: StateStore, Q: JobPublisher, P: Prober> Reconciler<S, Q, P> {
             self.store
                 .put(path, &entry(Status::Done, ver, None))
                 .await?;
+            tracing::Span::current().record("outcome", "compliant");
             return Ok(ReconcileOutcome::Compliant);
         }
 
         // Drift → claim Pending (CAS), then publish the job.
         if !self.claim_pending(path, ver).await? {
+            tracing::Span::current().record("outcome", "claimed_elsewhere");
             return Ok(ReconcileOutcome::Claimed);
         }
         let job = Job {
@@ -109,6 +117,8 @@ impl<S: StateStore, Q: JobPublisher, P: Prober> Reconciler<S, Q, P> {
             enqueued_at: OffsetDateTime::now_utc(),
         };
         self.publisher.publish(&job).await?;
+        tracing::Span::current().record("outcome", "enqueued");
+        tracing::info!(job_id = %job.id, "enqueued transcode job");
         Ok(ReconcileOutcome::Enqueued)
     }
 
