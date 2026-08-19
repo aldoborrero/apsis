@@ -22,7 +22,7 @@ Unmanic plugin `pyflows_transcode` becomes `apsis_transcode` at cutover.
 | D1 | **Name = `apsis`; license = MIT** | orbital theme; MIT so it's freely adoptable (unlike Unmanic GPL / FileFlows closed) |
 | D2 | **Keep Unmanic + `pyflows_transcode` in prod for now** | works today; build only when its friction is worth the port |
 | D3 | **Transport = NATS JetStream; media = shared NFS** | jobs carry only metadata — no file transfer (Unmanic's shared-path mode, validated in Appendix A) |
-| D4 | **No runtime plugin system** — compile-time modularity instead | keeps single-pass + "thin"; avoids the Rust plugin-ABI / multi-pass tax (see §2) |
+| D4 | **~~No runtime plugin system~~ → Bounded declarative extensibility** (amended 2026-08-18, constitution v2.0.0) | superseded: a pure config-expression language (CEL) for profile conditions + two versioned, replaceable seams (planner, hooks) with defaults — still **no** visual graph/editor, bespoke UI, or dynamic-ABI/WASM host; single-pass + portability + "thin" preserved. See spec `004-rich-profiles-cel` |
 | D5 | **No web UI** — observability via Grafana + VictoriaMetrics + logs | deletes Unmanic's biggest subsystem |
 | D6 | **Reuse the engine** (`_engine` → `apsis-engine` port); build only the orchestration | the transcode brain is already ours |
 

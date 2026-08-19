@@ -40,12 +40,29 @@ already-compliant file MUST be a no-op (`should_skip`). Work MUST hold a **lease
 (JetStream `AckWait` + heartbeats) so a crashed worker's job is redelivered, never
 stranded. Poison jobs MUST dead-letter and alert, never loop forever.
 
-### V. Compile-time modularity, not runtime plugins
+### V. Bounded declarative extensibility; no runtime plugin host
 
-Extensibility is **in code**: backends are a `Backend` trait, transforms are ordered
-stages; you extend by adding a Rust module and recompiling. There MUST be **no runtime
-plugin system** (no dynamic ABI, WASM host, embedded scripting, or user-authored node
-graph) unless apsis is deliberately re-scoped from *tool* to *published product*.
+apsis is extensible along a **declarative, bounded** surface so others can adapt it
+without forking — a deliberate, *bounded* widening from the original "tool" (flexibility
+of **policy and integration**, NOT a general product surface). Permitted:
+
+- **Declarative config.** The `Profile` (transcode policy) plus per-file **conditional
+  overrides** authored in a **pure, non-Turing-complete config-expression language** (CEL):
+  side-effect-free, guaranteed-terminating, type-checked at load. It **conditions and
+  computes config values only** — it MUST NOT construct plans, perform I/O, loop, or
+  replace the engine. It is validation-adjacent (like `garde`), not a scripting host.
+- **Two typed seams**, each shipping a batteries-included default and replaceable via a
+  **versioned JSON contract**: the **planner** (`plan(probe,profile) → FilePlan`; default
+  `apsis-engine`) and post-event **hooks** (default = a first-class *arr* helper +
+  `exec`/`webhook`). A replacement planner still emits the abstract `FilePlan` (preserving
+  portability + single-pass); hooks run **post-commit** and never mutate the transcode.
+- **Backends** remain a `Backend` trait extended in code.
+
+Still prohibited (would re-grow apsis into a heavy product): a **user-authored visual node
+graph or editor**, a **bespoke UI**, a general **dynamic-ABI / WASM plugin host**, or any
+extension that breaks **single-pass, portability, or the git-recoverable config**.
+Principles I–IV and the no-UI stance (Observability & Operations) are **unchanged**: this
+widens *what config can express and where implementations plug in*, nothing else.
 
 ## Observability & Operations
 
@@ -75,4 +92,13 @@ deviations MUST be justified in writing against the relevant principle. The desi
 is the runtime guidance for implementation detail; this file is the constitution it
 must not contradict.
 
-**Version**: 1.0.0 | **Ratified**: 2026-08-16 | **Last Amended**: 2026-08-16
+**Amendments**:
+- **2.0.0** (2026-08-18): Redefined Principle V from "compile-time modularity, no runtime
+  plugins" to "bounded declarative extensibility; no runtime plugin host" — permits a pure
+  config-expression language (CEL) for profile conditions and two versioned, replaceable
+  seams (planner, hooks) with batteries-included defaults, while still prohibiting a visual
+  graph/editor, bespoke UI, or dynamic-ABI/WASM plugin host. A *bounded* widening (policy +
+  integration flexibility); Principles I–IV and no-UI unchanged. Reflected in
+  `docs/design/rust-scheduler.md` (D4). Drives spec `004-rich-profiles-cel`.
+
+**Version**: 2.0.0 | **Ratified**: 2026-08-16 | **Last Amended**: 2026-08-18
