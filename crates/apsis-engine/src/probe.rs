@@ -22,6 +22,14 @@ pub struct StreamInfo {
     pub color_transfer: String,
     pub color_primaries: String,
     pub color_space: String,
+    // Added for the CEL profile-rule context (spec 004); default so existing
+    // fixtures + `..Default::default()` construction keep working.
+    #[serde(default)]
+    pub bitrate: u32,
+    #[serde(default)]
+    pub bit_depth: u32,
+    #[serde(default)]
+    pub forced: bool,
 }
 
 /// Parsed probe result: the first video stream + all audio/subtitle streams.
@@ -70,6 +78,11 @@ struct RawStream {
     color_primaries: String,
     #[serde(default)]
     color_space: String,
+    // ffprobe emits these as strings (and often omits them).
+    #[serde(default)]
+    bit_rate: String,
+    #[serde(default)]
+    bits_per_raw_sample: String,
     #[serde(default)]
     tags: RawTags,
     #[serde(default)]
@@ -88,6 +101,8 @@ struct RawTags {
 struct RawDisposition {
     #[serde(default)]
     default: i32,
+    #[serde(default)]
+    forced: i32,
 }
 
 /// Parse `ffprobe -print_format json -show_streams` output into a [`Probe`].
@@ -108,6 +123,9 @@ pub fn parse_probe(json: &str) -> Result<Probe, EngineError> {
             color_transfer: s.color_transfer,
             color_primaries: s.color_primaries,
             color_space: s.color_space,
+            bitrate: s.bit_rate.parse().unwrap_or(0),
+            bit_depth: s.bits_per_raw_sample.parse().unwrap_or(0),
+            forced: s.disposition.forced != 0,
         };
         match info.codec_type.as_str() {
             "video" if probe.video.is_none() => probe.video = Some(info),
@@ -160,6 +178,24 @@ mod tests {
         assert_eq!(p.audio[0].channels, 6);
         assert_eq!(p.subtitles.len(), 1);
         assert_eq!(p.subtitles[0].codec, "hdmv_pgs_subtitle");
+    }
+
+    #[test]
+    fn parses_bitrate_bitdepth_forced() {
+        // ffprobe emits bit_rate / bits_per_raw_sample as strings; disposition.forced as int.
+        let json = r#"{"streams":[
+            {"index":0,"codec_type":"video","codec_name":"hevc","bit_rate":"8000000",
+             "bits_per_raw_sample":"10","color_transfer":"smpte2084"},
+            {"index":1,"codec_type":"subtitle","codec_name":"subrip",
+             "tags":{"language":"eng"},"disposition":{"forced":1}}
+        ]}"#;
+        let p = parse_probe(json).unwrap();
+        let v = p.video.as_ref().unwrap();
+        assert_eq!(v.bitrate, 8_000_000);
+        assert_eq!(v.bit_depth, 10);
+        assert!(p.subtitles[0].forced);
+        // absent fields default cleanly (no panic on missing bit_rate)
+        assert_eq!(p.subtitles[0].bitrate, 0);
     }
 
     #[test]

@@ -94,13 +94,58 @@ fn de_quality<'de, D: Deserializer<'de>>(d: D) -> Result<u8, D::Error> {
     Ok(v)
 }
 
+/// An audio bitrate. Deserializes from **either** a bare integer (kbps: `128` →
+/// `128k`) **or** a unit string (`"128k"`, `"5M"`), and serializes to the canonical
+/// ffmpeg argument string. One bitrate convention across `add_stereo`/`add_mono`/
+/// `transcode`/`quality` (spec 004); the bare int keeps existing configs working.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(transparent)]
+pub struct Bitrate(String);
+
+impl Bitrate {
+    /// The canonical ffmpeg argument form (e.g. `"128k"`).
+    #[must_use]
+    pub fn as_arg(&self) -> &str {
+        &self.0
+    }
+}
+
+impl Default for Bitrate {
+    fn default() -> Self {
+        Self("0k".to_string())
+    }
+}
+
+impl<'de> Deserialize<'de> for Bitrate {
+    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum Raw {
+            Int(u64),
+            Str(String),
+        }
+        let s = match Raw::deserialize(d)? {
+            Raw::Int(kbps) => format!("{kbps}k"),
+            Raw::Str(s) => s,
+        };
+        // Fail-fast: <number>[k|M|…]; reject junk at config load.
+        let num = s.trim_end_matches(char::is_alphabetic);
+        if num.is_empty() || num.parse::<f64>().is_err() {
+            return Err(de::Error::custom(format!(
+                "invalid bitrate {s:?} (expected an int in kbps or a string like \"128k\"/\"5M\")"
+            )));
+        }
+        Ok(Self(s))
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct StereoConfig {
     #[serde(default = "d_aac")]
     pub codec: String,
     #[serde(default = "d_bitrate")]
-    pub bitrate: u32,
+    pub bitrate: Bitrate,
     #[serde(default = "d_channels")]
     pub channels: u32,
     #[serde(default)]
@@ -110,8 +155,8 @@ pub struct StereoConfig {
 fn d_aac() -> String {
     "aac".to_string()
 }
-fn d_bitrate() -> u32 {
-    128
+fn d_bitrate() -> Bitrate {
+    Bitrate("128k".to_string())
 }
 fn d_channels() -> u32 {
     2
@@ -264,6 +309,18 @@ mod tests {
             r#"{"video":{"codec":"hevc","quality":99},"audio":{},"subtitles":{},"output":{}}"#;
         let err = serde_json::from_str::<Profile>(json).unwrap_err();
         assert!(err.to_string().contains("0..=51"), "got: {err}");
+    }
+
+    #[test]
+    fn bitrate_accepts_int_and_string_and_rejects_junk() {
+        // back-compat: bare int (kbps) → canonical "128k"
+        let s: StereoConfig = serde_json::from_str(r#"{"bitrate":128}"#).unwrap();
+        assert_eq!(s.bitrate.as_arg(), "128k");
+        // string forms pass through
+        let s: StereoConfig = serde_json::from_str(r#"{"bitrate":"5M"}"#).unwrap();
+        assert_eq!(s.bitrate.as_arg(), "5M");
+        // junk fails at load (fail-fast)
+        assert!(serde_json::from_str::<StereoConfig>(r#"{"bitrate":"loud"}"#).is_err());
     }
 
     #[test]

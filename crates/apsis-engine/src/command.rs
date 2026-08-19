@@ -117,13 +117,13 @@ pub fn build_command(
         if item.action == TrackAction::Copy {
             cmd.set_codec(a_idx, "copy", &[]);
         } else {
-            let bitrate = profile.audio.add_stereo.bitrate;
+            let bitrate = profile.audio.add_stereo.bitrate.as_arg();
             cmd.set_codec(
                 a_idx,
                 &item.target_codec,
                 &[
                     ("ac", item.target_channels.to_string()),
-                    ("b", format!("{bitrate}k")),
+                    ("b", bitrate.to_string()),
                 ],
             );
         }

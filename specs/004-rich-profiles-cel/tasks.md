@@ -31,6 +31,8 @@ tree needed).
 
 - [ ] T001 Add `cel-interpreter` (MIT) to `crates/apsis-engine/Cargo.toml` `[dependencies]`;
   confirm `cargo build -p apsis-engine` is green and `nix flake check` still passes. (research R1)
+  **DEFERRED to the start of US2 (Phase 4)** — CEL isn't used until then; adding it now would
+  be an unused dependency. US1 needs no CEL.
 
 ---
 
@@ -39,13 +41,14 @@ tree needed).
 **Purpose**: the shared types every story reads — probe fields the CEL context + skip-gates need,
 and the unified `Bitrate` type. **⚠️ No US work starts until this is done.**
 
-- [ ] T002 [P] Extend `crates/apsis-engine/src/probe.rs`: add the MISSING `StreamInfo` fields —
-  video `bitrate` + `bit_depth`, audio `title`, subtitle `forced` — and parse them from the
-  ffprobe JSON. (`width`/`height`/`color_transfer` already exist.) Unit-test the parse. (research R4)
-- [ ] T003 [P] Add a `Bitrate` type in `crates/apsis-engine/src/config.rs` with a custom
-  `Deserialize` accepting a bare int (kbps) **or** a unit string (`"128k"`/`"5M"`); migrate
-  `StereoConfig.bitrate: u32` → `Bitrate`; unit-test that `bitrate = 128` still loads (SC-006).
-  (data-model §Bitrate)
+- [X] T002 [P] Extend `crates/apsis-engine/src/probe.rs`: added `StreamInfo.bitrate`,
+  `bit_depth`, `forced` + parse from ffprobe JSON (`bit_rate`/`bits_per_raw_sample` strings,
+  `disposition.forced`). `title`/`width`/`height`/`color_transfer`/`is_default` already existed.
+  Test `parses_bitrate_bitdepth_forced`. (research R4)
+- [X] T003 [P] Added `Bitrate` type (`config.rs`): custom `Deserialize` accepting a bare int
+  (kbps → `"128k"`) **or** a unit string (`"128k"`/`"5M"`), junk rejected at load; migrated
+  `StereoConfig.bitrate: u32 → Bitrate` (+ `AudioAction.bitrate`, `command.rs`); back-compat test
+  `bitrate_accepts_int_and_string_and_rejects_junk`. (data-model §Bitrate)
 
 **Checkpoint**: probe carries the CEL/skip fields; one bitrate convention exists.
 
