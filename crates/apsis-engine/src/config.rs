@@ -152,6 +152,8 @@ impl Bitrate {
             _ => (s.as_str(), true),
         };
         let numeric_ok = !num.is_empty()
+            && !num.starts_with('.')
+            && !num.ends_with('.')
             && num.bytes().all(|b| b.is_ascii_digit() || b == b'.')
             && num.bytes().filter(|&b| b == b'.').count() <= 1
             && num.parse::<f64>().is_ok();
@@ -617,6 +619,8 @@ mod tests {
             r#""128kM""#,
             r#""1e3k""#,
             r#""+128k""#,
+            r#"".5k""#,
+            r#""5.""#,
         ] {
             assert!(
                 serde_json::from_str::<StereoConfig>(&format!(r#"{{"bitrate":{bad}}}"#)).is_err(),
