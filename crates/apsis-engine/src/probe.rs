@@ -83,6 +83,9 @@ struct RawStream {
     bit_rate: String,
     #[serde(default)]
     bits_per_raw_sample: String,
+    // The reliable 10/12-bit signal (`bits_per_raw_sample` is often absent for HEVC/AV1).
+    #[serde(default)]
+    pix_fmt: String,
     #[serde(default)]
     tags: RawTags,
     #[serde(default)]
@@ -95,6 +98,30 @@ struct RawTags {
     language: String,
     #[serde(default)]
     title: String,
+    // MKV records per-stream bitrate as a `BPS` (or language-suffixed) tag rather
+    // than the container-level `bit_rate`; the reliable bitrate signal for MKV.
+    #[serde(default, rename = "BPS", alias = "BPS-eng")]
+    bps: String,
+}
+
+/// Derive bit depth: `pix_fmt` (reliable for 10/12-bit) → `bits_per_raw_sample` →
+/// 8 (SDR default). Returns 0 only if a bogus `bits_per_raw_sample` is present.
+fn bit_depth_from(pix_fmt: &str, bits_per_raw_sample: &str) -> u32 {
+    if ["10le", "10be", "p010", "p210", "p410"]
+        .iter()
+        .any(|p| pix_fmt.contains(p))
+    {
+        10
+    } else if ["12le", "12be", "p012", "p212"]
+        .iter()
+        .any(|p| pix_fmt.contains(p))
+    {
+        12
+    } else if !bits_per_raw_sample.is_empty() {
+        bits_per_raw_sample.parse().unwrap_or(0)
+    } else {
+        8
+    }
 }
 
 #[derive(Deserialize, Default)]
@@ -123,8 +150,16 @@ pub fn parse_probe(json: &str) -> Result<Probe, EngineError> {
             color_transfer: s.color_transfer,
             color_primaries: s.color_primaries,
             color_space: s.color_space,
-            bitrate: s.bit_rate.parse().unwrap_or(0),
-            bit_depth: s.bits_per_raw_sample.parse().unwrap_or(0),
+            // stream `bit_rate` first, then MKV's `BPS` tag, else 0 (unknown).
+            bitrate: {
+                let br = s.bit_rate.parse().unwrap_or(0);
+                if br != 0 {
+                    br
+                } else {
+                    s.tags.bps.parse().unwrap_or(0)
+                }
+            },
+            bit_depth: bit_depth_from(&s.pix_fmt, &s.bits_per_raw_sample),
             forced: s.disposition.forced != 0,
         };
         match info.codec_type.as_str() {
@@ -196,6 +231,22 @@ mod tests {
         assert!(p.subtitles[0].forced);
         // absent fields default cleanly (no panic on missing bit_rate)
         assert_eq!(p.subtitles[0].bitrate, 0);
+    }
+
+    #[test]
+    fn bit_depth_from_pix_fmt_and_bitrate_from_bps_tag() {
+        // Real 10-bit HEVC in MKV: no bits_per_raw_sample, no stream bit_rate — the
+        // signals are pix_fmt (yuv420p10le) and the MKV BPS tag.
+        let json = r#"{"streams":[
+            {"index":0,"codec_type":"video","codec_name":"hevc","pix_fmt":"yuv420p10le",
+             "tags":{"BPS":"9500000"}}
+        ]}"#;
+        let v = parse_probe(json).unwrap().video.unwrap();
+        assert_eq!(v.bit_depth, 10, "pix_fmt yuv420p10le → 10-bit");
+        assert_eq!(v.bitrate, 9_500_000, "MKV BPS tag → bitrate");
+        // 8-bit source with neither signal → default 8, not 0.
+        let json = r#"{"streams":[{"index":0,"codec_type":"video","codec_name":"h264","pix_fmt":"yuv420p"}]}"#;
+        assert_eq!(parse_probe(json).unwrap().video.unwrap().bit_depth, 8);
     }
 
     #[test]

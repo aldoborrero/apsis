@@ -12,6 +12,7 @@
 //! be silently dropped to a default. This strictness applies only to the config
 //! structs — the ffprobe-facing probe types stay permissive (trust boundary).
 
+use serde::de::{MapAccess, Visitor};
 use serde::{Deserialize, Deserializer, Serialize, de};
 
 use crate::error::EngineError;
@@ -63,6 +64,9 @@ pub struct VideoConfig {
     #[serde(default = "d_hdr_policy")]
     pub hdr_policy: HdrPolicy,
     // spec 004 coverage additions (all optional/additive).
+    /// Encoder speed preset. **CPU-encoder only** (libx265/libsvtav1); the VAAPI
+    /// backend has no `-preset` equivalent, so it is ignored on the VAAPI path (a
+    /// VAAPI `compression_level` mapping is deferred). Default on CPU is `medium`.
     #[serde(default)]
     pub preset: Option<String>,
     /// Downscale-if-larger target, e.g. `"1080p"` or `"1920x1080"`.
@@ -133,15 +137,29 @@ impl Default for Bitrate {
 }
 
 impl Bitrate {
-    /// Validate a canonical string (`128k`/`5M`), rejecting junk (fail-fast).
+    /// Validate a bitrate string against a real grammar — `<digits>[.<digits>]`
+    /// with an optional single `k|K|m|M|g|G` suffix, nothing else. Rejects signs,
+    /// scientific notation, and trailing junk that would otherwise reach ffmpeg
+    /// verbatim (e.g. `-5M`, `5Mbps`, `128kM`, `1e3k`, `+128k`).
     fn parse(s: String) -> Result<Self, String> {
-        let num = s.trim_end_matches(char::is_alphabetic);
-        if num.is_empty() || num.parse::<f64>().is_err() {
-            return Err(format!(
-                "invalid bitrate {s:?} (expected an int in kbps or a string like \"128k\"/\"5M\")"
-            ));
+        let bad =
+            || format!("invalid bitrate {s:?} (expected e.g. `128` (kbps), \"128k\", or \"5M\")");
+        let (num, unit_ok) = match s.chars().next_back() {
+            Some(c) if c.is_ascii_alphabetic() => (
+                &s[..s.len() - c.len_utf8()],
+                matches!(c, 'k' | 'K' | 'm' | 'M' | 'g' | 'G'),
+            ),
+            _ => (s.as_str(), true),
+        };
+        let numeric_ok = !num.is_empty()
+            && num.bytes().all(|b| b.is_ascii_digit() || b == b'.')
+            && num.bytes().filter(|&b| b == b'.').count() <= 1
+            && num.parse::<f64>().is_ok();
+        if unit_ok && numeric_ok {
+            Ok(Self(s))
+        } else {
+            Err(bad())
         }
-        Ok(Self(s))
     }
 }
 
@@ -204,7 +222,9 @@ impl QualityMode {
             }
             (QualityKind::Qp, QualityValue::Num(n)) => vec![("qp", n.to_string())],
             (QualityKind::Crf, QualityValue::Num(n)) => vec![("crf", n.to_string())],
-            (QualityKind::Bitrate, QualityValue::Rate(b)) => vec![("b:v", b.as_arg().to_string())],
+            // Bare key `b` → `build` appends the stream specifier → `-b:v:0` (a
+            // pre-baked `b:v` here would become the malformed `-b:v:v:0`).
+            (QualityKind::Bitrate, QualityValue::Rate(b)) => vec![("b", b.as_arg().to_string())],
             (QualityKind::Vmaf, _) => {
                 return Err(EngineError::Unsupported(
                     "quality.mode = \"vmaf\" (AutoCRF) — deferred (spec 004 R5)".to_string(),
@@ -221,49 +241,81 @@ impl QualityMode {
 
 impl<'de> Deserialize<'de> for QualityMode {
     fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        // The `{ mode, value }` value literal — an int (qp/crf/vmaf) or a bitrate str.
         #[derive(Deserialize)]
         #[serde(untagged)]
         enum RawVal {
-            Int(u64),
+            Int(i64),
             Str(String),
         }
-        #[derive(Deserialize)]
-        #[serde(untagged)]
-        enum Raw {
-            Short(u64),
-            Full {
-                #[serde(default)]
-                mode: QualityKind,
-                value: RawVal,
-            },
-        }
-        let (mode, raw) = match Raw::deserialize(d)? {
-            Raw::Short(n) => (QualityKind::Auto, RawVal::Int(n)),
-            Raw::Full { mode, value } => (mode, value),
-        };
-        let value = if mode == QualityKind::Bitrate {
-            let b = match raw {
-                RawVal::Int(kbps) => Bitrate(format!("{kbps}k")),
-                RawVal::Str(s) => Bitrate::parse(s).map_err(de::Error::custom)?,
-            };
-            QualityValue::Rate(b)
-        } else {
-            let n: u8 = match raw {
-                RawVal::Int(n) => u8::try_from(n)
-                    .map_err(|_| de::Error::custom(format!("quality value {n} out of range")))?,
-                RawVal::Str(s) => s.parse().map_err(|_| {
-                    de::Error::custom(format!("quality value must be an integer, got {s:?}"))
-                })?,
-            };
+        // Range-check a numeric quality for a non-bitrate mode (no lossy cast, no panic).
+        fn num_quality<E: de::Error>(mode: QualityKind, n: i128) -> Result<QualityMode, E> {
             let max = if mode == QualityKind::Vmaf { 100 } else { 51 };
-            if n > max {
-                return Err(de::Error::custom(format!(
+            match u8::try_from(n).ok().filter(|&v| i128::from(v) <= max) {
+                Some(v) => Ok(QualityMode {
+                    mode,
+                    value: QualityValue::Num(v),
+                }),
+                None => Err(E::custom(format!(
                     "video.quality value must be 0..={max}, got {n}"
-                )));
+                ))),
             }
-            QualityValue::Num(n)
-        };
-        Ok(Self { mode, value })
+        }
+        // A Visitor (not untagged) so a bare int gives a real range error, a table
+        // rejects unknown keys, and a missing `value` is reported — restoring the
+        // module's fail-fast invariant for the one field that lacked it.
+        struct QmVisitor;
+        impl<'de> Visitor<'de> for QmVisitor {
+            type Value = QualityMode;
+            fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.write_str("an integer quality (0..=51) or a { mode, value } table")
+            }
+            fn visit_u64<E: de::Error>(self, n: u64) -> Result<QualityMode, E> {
+                num_quality(QualityKind::Auto, i128::from(n))
+            }
+            fn visit_i64<E: de::Error>(self, n: i64) -> Result<QualityMode, E> {
+                num_quality(QualityKind::Auto, i128::from(n))
+            }
+            fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<QualityMode, A::Error> {
+                let mut mode: Option<QualityKind> = None;
+                let mut value: Option<RawVal> = None;
+                while let Some(k) = map.next_key::<String>()? {
+                    match k.as_str() {
+                        "mode" => mode = Some(map.next_value()?),
+                        "value" => value = Some(map.next_value()?),
+                        other => return Err(de::Error::unknown_field(other, &["mode", "value"])),
+                    }
+                }
+                let mode = mode.unwrap_or_default();
+                let value = value.ok_or_else(|| de::Error::missing_field("value"))?;
+                if mode == QualityKind::Bitrate {
+                    let b = match value {
+                        RawVal::Int(n) if n >= 0 => Bitrate(format!("{n}k")),
+                        RawVal::Int(n) => {
+                            return Err(de::Error::custom(format!(
+                                "quality bitrate must be non-negative, got {n}"
+                            )));
+                        }
+                        RawVal::Str(s) => Bitrate::parse(s).map_err(de::Error::custom)?,
+                    };
+                    Ok(QualityMode {
+                        mode,
+                        value: QualityValue::Rate(b),
+                    })
+                } else {
+                    let n = match value {
+                        RawVal::Int(n) => i128::from(n),
+                        RawVal::Str(s) => s.parse::<i128>().map_err(|_| {
+                            de::Error::custom(format!(
+                                "quality value must be an integer, got {s:?}"
+                            ))
+                        })?,
+                    };
+                    num_quality(mode, n)
+                }
+            }
+        }
+        d.deserialize_any(QmVisitor)
     }
 }
 
@@ -500,13 +552,20 @@ mod tests {
         // explicit modes
         let q: QualityMode = serde_json::from_str(r#"{"mode":"crf","value":18}"#).unwrap();
         assert_eq!(q.rc_opts(true).unwrap(), vec![("crf", "18".to_string())]);
+        // bitrate mode → bare key "b" (so build makes -b:v:0, not -b:v:v:0)
         let q: QualityMode = serde_json::from_str(r#"{"mode":"bitrate","value":"5M"}"#).unwrap();
-        assert_eq!(q.rc_opts(false).unwrap(), vec![("b:v", "5M".to_string())]);
+        assert_eq!(q.rc_opts(false).unwrap(), vec![("b", "5M".to_string())]);
         // vmaf accepted by schema but not materializable yet (R5)
         let q: QualityMode = serde_json::from_str(r#"{"mode":"vmaf","value":95}"#).unwrap();
         assert!(matches!(q.rc_opts(true), Err(EngineError::Unsupported(_))));
-        // out of range still rejected at load
-        assert!(serde_json::from_str::<QualityMode>(r#"{"mode":"qp","value":99}"#).is_err());
+        // out of range rejected at load, with a real message (not an untagged miss)
+        let err = serde_json::from_str::<QualityMode>(r#"{"mode":"qp","value":99}"#).unwrap_err();
+        assert!(err.to_string().contains("0..=51"), "got: {err}");
+        // a negative shorthand gets a real range error too
+        let err = serde_json::from_str::<QualityMode>("-5").unwrap_err();
+        assert!(err.to_string().contains("0..=51"), "got: {err}");
+        // an unknown key in the quality table fails loudly (deny-unknown restored)
+        assert!(serde_json::from_str::<QualityMode>(r#"{"mode":"crf","vlaue":18}"#).is_err());
     }
 
     #[test]
@@ -543,11 +602,27 @@ mod tests {
         // back-compat: bare int (kbps) → canonical "128k"
         let s: StereoConfig = serde_json::from_str(r#"{"bitrate":128}"#).unwrap();
         assert_eq!(s.bitrate.as_arg(), "128k");
-        // string forms pass through
-        let s: StereoConfig = serde_json::from_str(r#"{"bitrate":"5M"}"#).unwrap();
-        assert_eq!(s.bitrate.as_arg(), "5M");
-        // junk fails at load (fail-fast)
-        assert!(serde_json::from_str::<StereoConfig>(r#"{"bitrate":"loud"}"#).is_err());
+        // valid string forms pass through (incl. a decimal)
+        for ok in [r#""5M""#, r#""128k""#, r#""1.5M""#, r#""64000""#] {
+            assert!(
+                serde_json::from_str::<StereoConfig>(&format!(r#"{{"bitrate":{ok}}}"#)).is_ok(),
+                "should accept {ok}"
+            );
+        }
+        // junk fails at load (fail-fast) — the grammar rejects sign/exp/unit-junk
+        for bad in [
+            r#""loud""#,
+            r#""-5M""#,
+            r#""5Mbps""#,
+            r#""128kM""#,
+            r#""1e3k""#,
+            r#""+128k""#,
+        ] {
+            assert!(
+                serde_json::from_str::<StereoConfig>(&format!(r#"{{"bitrate":{bad}}}"#)).is_err(),
+                "should reject {bad}"
+            );
+        }
     }
 
     #[test]

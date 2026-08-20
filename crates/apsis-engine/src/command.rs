@@ -398,6 +398,29 @@ mod tests {
     }
 
     #[test]
+    fn bitrate_mode_emits_valid_video_stream_specifier() {
+        // quality.mode = bitrate must materialize as `-b:v:0 5M`, NOT the malformed
+        // `-b:v:v:0` a pre-baked `b:v` key would produce (the golden tests otherwise
+        // only cover default auto→qp/crf, so this path was untested).
+        let prof: Profile = serde_json::from_str(
+            r#"{"video":{"codec":"hevc","skip_codecs":[],"quality":{"mode":"bitrate","value":"5M"}},
+                "audio":{},"subtitles":{},"output":{"container":"mkv"}}"#,
+        )
+        .unwrap();
+        let probe = Probe {
+            video: Some(video("h264")),
+            ..Default::default()
+        };
+        let p = plan("in.mkv", &probe, &prof);
+        let joined = vaapi().build(&p, &prof).unwrap().build().join(" ");
+        assert!(joined.contains("-b:v:0 5M"), "{joined}");
+        assert!(
+            !joined.contains("-b:v:v:0"),
+            "malformed specifier: {joined}"
+        );
+    }
+
+    #[test]
     fn generated_stereo_audio_encodes_with_ac_and_bitrate() {
         // A 6ch source + add_stereo(eng) → the plan emits copy(5.1) AND a generated
         // aac stereo track; this exercises the ENCODE audio branch of build_command

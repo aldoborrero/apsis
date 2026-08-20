@@ -21,8 +21,10 @@ type Fatal = Box<dyn std::error::Error + Send + Sync>;
 
 #[tokio::main]
 async fn main() -> ExitCode {
-    // Box the top-level future: the Job it processes carries the full Profile
-    // (grown by spec 004), which clippy flags as a large stack future.
+    // Box the whole worker future: the real weight is `worker::process`, which holds
+    // a `Job` (embedding the full `FilePlan` + `Profile`, grown by spec 004) by value
+    // across its awaits in the pull loop. Boxing at the root heap-allocates that state
+    // transitively (clippy `large_futures`); the principled fix is to shrink `Job`.
     match Box::pin(serve()).await {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {

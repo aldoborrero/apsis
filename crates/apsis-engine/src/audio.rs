@@ -2,7 +2,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use crate::config::{AudioConfig, Bitrate};
+use crate::config::AudioConfig;
 use crate::constants::is_commentary;
 use crate::probe::StreamInfo;
 
@@ -13,13 +13,14 @@ pub enum AudioActionKind {
 }
 
 /// One planned output audio track: `Copy` (passthrough) or `Encode` (new AAC stereo).
+/// The encode bitrate is not carried here — `command.rs` reads it from the profile's
+/// `add_stereo` (the single source of truth), so no plan/command divergence is possible.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AudioAction {
     pub stream: StreamInfo,
     pub action: AudioActionKind,
     pub codec: String,
     pub channels: u32,
-    pub bitrate: Bitrate,
 }
 
 /// Build the ordered list of audio actions from probe data and config.
@@ -87,7 +88,6 @@ pub fn build_audio_plan(streams: &[StreamInfo], config: &AudioConfig) -> Vec<Aud
                 action: AudioActionKind::Copy,
                 codec: String::new(),
                 channels: 0,
-                bitrate: Bitrate::default(),
             });
         }
         if s.channels > config.add_stereo.channels
@@ -99,7 +99,6 @@ pub fn build_audio_plan(streams: &[StreamInfo], config: &AudioConfig) -> Vec<Aud
                 action: AudioActionKind::Encode,
                 codec: config.add_stereo.codec.clone(),
                 channels: config.add_stereo.channels,
-                bitrate: config.add_stereo.bitrate.clone(),
             });
             stereo_present.insert(s.language.clone());
         }
