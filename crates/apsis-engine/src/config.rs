@@ -13,7 +13,8 @@
 //! structs — the ffprobe-facing probe types stay permissive (trust boundary).
 
 use serde::de::{MapAccess, Visitor};
-use serde::{Deserialize, Deserializer, Serialize, de};
+use serde::ser::SerializeStruct;
+use serde::{Deserialize, Deserializer, Serialize, Serializer, de};
 
 use crate::error::EngineError;
 
@@ -205,10 +206,32 @@ pub enum QualityValue {
 /// Video quality: `{ mode, value }`, or the back-compat shorthand `quality = N`
 /// (→ `{ auto, N }`). Keeps the profile hardware-agnostic — `auto` resolves to the
 /// backend's native RC (VAAPI qp / CPU crf) at command-build.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct QualityMode {
     pub mode: QualityKind,
     pub value: QualityValue,
+}
+
+// Manual, mode-directed Serialize: the fields are `pub`, so a `QualityMode` could
+// be built with a value that doesn't match its mode (e.g. `Qp` + `Rate`). Deserialize
+// enforces the pairing, but a derived Serialize would emit an unparseable shape for
+// such a value. Emitting a value CONSISTENT with the mode keeps serialize total and
+// its output always re-deserializable (the coordinator→worker `Job` JSON round-trip),
+// with zero change for well-formed values.
+impl Serialize for QualityMode {
+    fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        let mut st = s.serialize_struct("QualityMode", 2)?;
+        st.serialize_field("mode", &self.mode)?;
+        match (self.mode, &self.value) {
+            (QualityKind::Bitrate, QualityValue::Rate(b)) => st.serialize_field("value", b)?,
+            (QualityKind::Bitrate, QualityValue::Num(n)) => {
+                st.serialize_field("value", &Bitrate(format!("{n}k")))?;
+            }
+            (_, QualityValue::Num(n)) => st.serialize_field("value", n)?,
+            (_, QualityValue::Rate(_)) => st.serialize_field("value", &0u8)?,
+        }
+        st.end()
+    }
 }
 
 impl QualityMode {
@@ -568,6 +591,25 @@ mod tests {
         assert!(err.to_string().contains("0..=51"), "got: {err}");
         // an unknown key in the quality table fails loudly (deny-unknown restored)
         assert!(serde_json::from_str::<QualityMode>(r#"{"mode":"crf","vlaue":18}"#).is_err());
+
+        // mode-directed serialize: a well-formed value round-trips unchanged...
+        let q = QualityMode {
+            mode: QualityKind::Crf,
+            value: QualityValue::Num(18),
+        };
+        assert_eq!(
+            serde_json::from_str::<QualityMode>(&serde_json::to_string(&q).unwrap()).unwrap(),
+            q
+        );
+        // ...and a (unreachable-from-config) mismatched value still serializes to a
+        // shape that RE-deserializes, instead of an unparseable one.
+        let mismatched = QualityMode {
+            mode: QualityKind::Qp,
+            value: QualityValue::Rate(Bitrate("0k".to_string())),
+        };
+        let json = serde_json::to_string(&mismatched).unwrap();
+        assert_eq!(json, r#"{"mode":"qp","value":0}"#);
+        assert!(serde_json::from_str::<QualityMode>(&json).is_ok());
     }
 
     #[test]
