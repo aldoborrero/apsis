@@ -76,12 +76,15 @@ with new fields plans correctly; existing `scheduler.toml` loads unchanged.
 
 ### Implementation for US1
 
-- [ ] T007 [US1] `config.rs`: `QualityMode { mode: qp|crf|bitrate|vmaf, value }` + bare-int
-  shorthand → `{auto, N}`; `VideoConfig` adds `preset`, `max_resolution`, `crop`, `custom_args`,
-  `skip_if_resolution_below`, `skip_if_bitrate_below` (all `deny_unknown_fields`).
-- [ ] T008 [US1] `config.rs`: `AudioConfig` adds `transcode`, `add_mono`, `max_channels`,
-  `normalize`; `SubtitleConfig` adds `order`, `forced_only`, `extract`; `OutputConfig` adds
-  `conform`, `strip_metadata`, `keep_chapters`.
+- [X] T007 [US1] `config.rs`: `QualityMode {mode: auto|qp|crf|bitrate|vmaf, value: Num|Rate}` +
+  bare-int shorthand → `{auto, N}` (range-validated at load; vmaf reserved, errors at
+  command-build via `EngineError::Unsupported`); `VideoConfig` + `preset`, `max_resolution`,
+  `crop` (`Crop` enum), `custom_args`, `skip_if_resolution_below`, `skip_if_bitrate_below`.
+  `command.rs` materializes via `QualityMode::rc_opts` (auto→qp/crf per backend) + `preset`.
+- [X] T008 [US1] `config.rs`: `AudioConfig` + `transcode` (`AudioTranscode`), `add_mono`
+  (`MonoConfig`), `max_channels`, `normalize`; `SubtitleConfig` + `order`, `forced_only`,
+  `extract`; `OutputConfig` + `conform`, `strip_metadata`, `keep_chapters`. Tests:
+  `deserializes_spec004_coverage_fields`, `quality_mode_forms_and_rc_opts`.
 - [ ] T009 [US1] `crates/apsis-engine/src/audio.rs`: construct `transcode` (re-encode kept),
   `add_mono` (from best kept source), `max_channels`, `normalize`; consolidate the keep-≥1-audio
   failsafe (one guard covering all filters, per data-model §invariant).

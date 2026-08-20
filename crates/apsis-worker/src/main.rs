@@ -21,7 +21,9 @@ type Fatal = Box<dyn std::error::Error + Send + Sync>;
 
 #[tokio::main]
 async fn main() -> ExitCode {
-    match serve().await {
+    // Box the top-level future: the Job it processes carries the full Profile
+    // (grown by spec 004), which clippy flags as a large stack future.
+    match Box::pin(serve()).await {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
             eprintln!("apsis-worker: fatal: {e}");

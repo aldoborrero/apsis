@@ -15,6 +15,11 @@ pub enum EngineError {
     #[error("plan/probe mismatch: {0}")]
     PlanProbeMismatch(String),
 
+    /// A profile option is accepted by the schema but not yet materializable by
+    /// the backend (e.g. `quality.mode = "vmaf"` / `AutoCRF` — deferred, spec 004 R5).
+    #[error("unsupported profile option: {0}")]
+    Unsupported(String),
+
     #[cfg(feature = "probe-exec")]
     #[error("ffprobe I/O error: {0}")]
     Ffprobe(#[from] std::io::Error),

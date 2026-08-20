@@ -82,10 +82,8 @@ pub fn build_command(
     } else if use_vaapi {
         let codec = profile.video.codec;
         let async_depth = opts.hardware.map_or(4, |h| h.vaapi.async_depth);
-        let mut vopts: Vec<(&str, String)> = vec![
-            ("qp", profile.video.quality.to_string()),
-            ("async_depth", async_depth.to_string()),
-        ];
+        let mut vopts = profile.video.quality.rc_opts(true)?;
+        vopts.push(("async_depth", async_depth.to_string()));
         // AMD a53_cc workaround: emit HDR SEI only, dropping a53_cc, on hevc/h264.
         // The engine only targets hevc/av1; av1 has no SEI concept, so scope to hevc.
         if codec == VideoCodec::Hevc {
@@ -93,14 +91,16 @@ pub fn build_command(
         }
         cmd.set_codec(v_idx, vaapi_encoder(codec), &vopts);
     } else {
-        cmd.set_codec(
-            v_idx,
-            cpu_encoder(profile.video.codec),
-            &[
-                ("crf", profile.video.quality.to_string()),
-                ("preset", "medium".to_string()),
-            ],
-        );
+        let mut copts = profile.video.quality.rc_opts(false)?;
+        copts.push((
+            "preset",
+            profile
+                .video
+                .preset
+                .clone()
+                .unwrap_or_else(|| "medium".to_string()),
+        ));
+        cmd.set_codec(v_idx, cpu_encoder(profile.video.codec), &copts);
     }
     cmd.set_metadata(v_idx, "title", "");
 
