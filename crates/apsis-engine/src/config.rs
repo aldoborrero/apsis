@@ -129,6 +129,24 @@ impl Bitrate {
     pub fn as_arg(&self) -> &str {
         &self.0
     }
+
+    /// The value in bits/second (`"2M"` → `2_000_000`), for threshold comparisons.
+    #[must_use]
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        clippy::cast_precision_loss
+    )] // a non-negative bitrate magnitude truncated to whole bits/sec — intentional
+    pub fn bps(&self) -> u64 {
+        let s = self.0.as_str();
+        let (num, mult) = match s.as_bytes().last() {
+            Some(b'k' | b'K') => (&s[..s.len() - 1], 1_000f64),
+            Some(b'm' | b'M') => (&s[..s.len() - 1], 1_000_000f64),
+            Some(b'g' | b'G') => (&s[..s.len() - 1], 1_000_000_000f64),
+            _ => (s, 1f64),
+        };
+        (num.parse::<f64>().unwrap_or(0.0) * mult).max(0.0) as u64
+    }
 }
 
 impl Default for Bitrate {

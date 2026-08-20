@@ -253,6 +253,23 @@ fn select_default_subtitle_pos(subs: &[StreamInfo], default_language: &str) -> O
     Some(0)
 }
 
+/// Parse a resolution string to its target height: `"1080p"`/`"720i"` → 1080/720,
+/// `"1920x1080"` → 1080, `"4k"`/`"8k"` → 2160/4320. `None` if unrecognized.
+fn parse_resolution_height(s: &str) -> Option<u32> {
+    let s = s.trim();
+    if let Some(rest) = s.strip_suffix(['p', 'i']) {
+        return rest.parse().ok();
+    }
+    if let Some((_, h)) = s.split_once(['x', 'X']) {
+        return h.parse().ok();
+    }
+    match s.to_ascii_lowercase().as_str() {
+        "4k" => Some(2160),
+        "8k" => Some(4320),
+        _ => None,
+    }
+}
+
 /// Compute the full [`FilePlan`] for a file (port of `plan_from_probe`).
 #[must_use]
 #[allow(clippy::too_many_lines)] // faithful 1:1 port of the single Python `plan_from_probe`
@@ -467,14 +484,32 @@ pub fn plan(input_path: &str, probe: &Probe, profile: &Profile) -> FilePlan {
     }
 
     let compliant = reasons.is_empty();
+    // Skip gates (spec 004): a source already *below* a resolution/bitrate threshold
+    // is left alone even if its codec would otherwise be transcoded. Only fires on a
+    // KNOWN value (>0) — an unknown (0) probe field never triggers a skip.
+    let gate_skip = {
+        let res = profile
+            .video
+            .skip_if_resolution_below
+            .as_deref()
+            .and_then(parse_resolution_height)
+            .is_some_and(|t| video.height > 0 && video.height < t);
+        let br = profile
+            .video
+            .skip_if_bitrate_below
+            .as_ref()
+            .is_some_and(|b| video.bitrate > 0 && u64::from(video.bitrate) < b.bps());
+        res || br
+    };
+    let should_skip = compliant || gate_skip;
     FilePlan {
-        status: if compliant {
+        status: if should_skip {
             PlanStatus::Compliant
         } else {
             PlanStatus::ChangesRequired
         },
         compliant,
-        should_skip: compliant,
+        should_skip,
         source_probe: probe.clone(),
         output,
         video: VideoPlan {
@@ -528,6 +563,59 @@ mod tests {
         assert!(p.should_skip);
         assert_eq!(p.reasons[0].code, ReasonCode::NoVideoStream);
         assert_eq!(p.video.action, VideoAction::Unsupported);
+    }
+
+    #[test]
+    fn skip_gates_leave_small_sources_alone() {
+        let small = |h: u32, br: u32| {
+            let mut v = video("h264", ""); // h264 ∉ skip_codecs → would transcode
+            v.height = h;
+            v.bitrate = br;
+            Probe {
+                video: Some(v),
+                ..Default::default()
+            }
+        };
+        let with = |gate: &str| {
+            profile(&format!(
+                r#"{{"video":{{"codec":"hevc","skip_codecs":["hevc"],{gate}}},"audio":{{}},"subtitles":{{}},"output":{{}}}}"#
+            ))
+        };
+        // below the resolution / bitrate threshold → skipped despite the codec mismatch
+        assert!(
+            plan(
+                "x.mkv",
+                &small(400, 1_000_000),
+                &with(r#""skip_if_resolution_below":"480p""#)
+            )
+            .should_skip
+        );
+        assert!(
+            plan(
+                "x.mkv",
+                &small(400, 1_000_000),
+                &with(r#""skip_if_bitrate_below":"2M""#)
+            )
+            .should_skip
+        );
+        // a 1080p / 10M source is above the gate → still transcodes
+        assert!(
+            !plan(
+                "x.mkv",
+                &small(1080, 10_000_000),
+                &with(r#""skip_if_resolution_below":"480p""#)
+            )
+            .should_skip
+        );
+        // unknown probe value (0) never triggers a skip
+        assert!(
+            !plan(
+                "x.mkv",
+                &small(0, 0),
+                &with(r#""skip_if_resolution_below":"480p""#)
+            )
+            .should_skip
+        );
     }
 
     #[test]
