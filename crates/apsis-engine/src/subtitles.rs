@@ -20,11 +20,12 @@ fn banned_codecs(remove_formats: &[String]) -> HashSet<String> {
 }
 
 /// Filter subtitle streams: remove banned formats → keep matching languages →
-/// remove commentary.
+/// remove commentary → `forced_only` → `order` (spec 004 pipeline order). Unlike
+/// audio there is no "keep ≥1" failsafe — zero kept subtitles is a valid outcome.
 #[must_use]
 pub fn filter_subtitles(streams: &[StreamInfo], config: &SubtitleConfig) -> Vec<StreamInfo> {
     let banned = banned_codecs(&config.remove_formats);
-    streams
+    let mut kept: Vec<StreamInfo> = streams
         .iter()
         .filter(|s| {
             if banned.contains(&s.codec) {
@@ -36,10 +37,25 @@ pub fn filter_subtitles(streams: &[StreamInfo], config: &SubtitleConfig) -> Vec<
             if config.remove_commentary && is_commentary(&s.title) {
                 return false;
             }
+            if config.forced_only && !s.forced {
+                return false;
+            }
             true
         })
         .cloned()
-        .collect()
+        .collect();
+
+    // Reorder by the configured language priority (stable; unlisted languages last).
+    if !config.order.is_empty() {
+        kept.sort_by_key(|s| {
+            config
+                .order
+                .iter()
+                .position(|l| *l == s.language)
+                .unwrap_or(usize::MAX)
+        });
+    }
+    kept
 }
 
 #[cfg(test)]
@@ -59,6 +75,27 @@ mod tests {
             title: title.into(),
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn forced_only_and_order() {
+        let mut forced = sub(2, "eng", "subrip", "");
+        forced.forced = true;
+        let streams = [
+            sub(0, "spa", "subrip", ""),
+            sub(1, "eng", "subrip", ""),
+            forced,
+        ];
+        // forced_only keeps only the forced track
+        let kept = filter_subtitles(&streams, &cfg(r#"{"forced_only":true}"#));
+        assert_eq!(kept.len(), 1);
+        assert!(kept[0].forced);
+        // order reorders kept subs by language priority (eng before spa)
+        let kept = filter_subtitles(&streams, &cfg(r#"{"order":["eng","spa"]}"#));
+        assert_eq!(
+            kept.iter().map(|s| s.language.as_str()).collect::<Vec<_>>(),
+            ["eng", "eng", "spa"]
+        );
     }
 
     #[test]

@@ -117,7 +117,17 @@ pub fn build_command(
         if item.action == TrackAction::Copy {
             cmd.set_codec(a_idx, "copy", &[]);
         } else {
-            let bitrate = profile.audio.add_stereo.bitrate.as_arg();
+            // A generated mono track (1ch) uses add_mono's bitrate; stereo/other
+            // downmixes use add_stereo's. Both read from the profile (source of truth).
+            let bitrate = if item.target_channels == 1 {
+                profile
+                    .audio
+                    .add_mono
+                    .as_ref()
+                    .map_or("64k", |m| m.bitrate.as_arg())
+            } else {
+                profile.audio.add_stereo.bitrate.as_arg()
+            };
             cmd.set_codec(
                 a_idx,
                 &item.target_codec,

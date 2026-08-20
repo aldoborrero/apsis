@@ -64,7 +64,7 @@ pub fn build_audio_plan(streams: &[StreamInfo], config: &AudioConfig) -> Vec<Aud
         )
     });
 
-    // 4. Build actions: original (copy) then optional stereo downmix per language.
+    // 4. Build actions: original (copy) then optional stereo/mono downmix per lang.
     let stereo_langs: HashSet<&str> = config
         .add_stereo
         .languages
@@ -77,6 +77,19 @@ pub fn build_audio_plan(streams: &[StreamInfo], config: &AudioConfig) -> Vec<Aud
             kept.iter()
                 .any(|s| s.language == lang && s.channels <= config.add_stereo.channels)
         })
+        .map(|&lang| lang.to_string())
+        .collect();
+
+    // add_mono mirrors add_stereo but downmixes to 1 channel; skip if a mono track
+    // in that language is already present.
+    let mono_langs: HashSet<&str> = config
+        .add_mono
+        .as_ref()
+        .map(|m| m.languages.iter().map(String::as_str).collect())
+        .unwrap_or_default();
+    let mut mono_present: HashSet<String> = mono_langs
+        .iter()
+        .filter(|&&lang| kept.iter().any(|s| s.language == lang && s.channels <= 1))
         .map(|&lang| lang.to_string())
         .collect();
 
@@ -101,6 +114,19 @@ pub fn build_audio_plan(streams: &[StreamInfo], config: &AudioConfig) -> Vec<Aud
                 channels: config.add_stereo.channels,
             });
             stereo_present.insert(s.language.clone());
+        }
+        if let Some(mono) = &config.add_mono
+            && s.channels > 1
+            && mono_langs.contains(s.language.as_str())
+            && !mono_present.contains(&s.language)
+        {
+            actions.push(AudioAction {
+                stream: s.clone(),
+                action: AudioActionKind::Encode,
+                codec: mono.codec.clone(),
+                channels: 1,
+            });
+            mono_present.insert(s.language.clone());
         }
     }
     actions
@@ -140,6 +166,24 @@ mod tests {
         let streams = [audio(0, "eng", 2, ""), audio(1, "spa", 2, "")];
         let plan = build_audio_plan(&streams, &cfg(r#"{"keep_languages":["fre"]}"#));
         assert_eq!(plan.len(), 2);
+    }
+
+    #[test]
+    fn add_mono_generates_a_one_channel_track() {
+        // 5.1 English source + add_mono(eng) → copy 5.1 + a generated 1-channel encode.
+        let streams = [audio(0, "eng", 6, "")];
+        let plan = build_audio_plan(
+            &streams,
+            &cfg(r#"{"preserve_surround":true,"add_mono":{"languages":["eng"]}}"#),
+        );
+        assert_eq!(plan.len(), 2, "copy 5.1 + generated mono");
+        assert_eq!(plan[0].action, AudioActionKind::Copy);
+        assert_eq!(plan[1].action, AudioActionKind::Encode);
+        assert_eq!(plan[1].channels, 1, "mono downmix");
+        // a source already ≤1ch in that language is not duplicated
+        let mono = [audio(0, "eng", 1, "")];
+        let plan = build_audio_plan(&mono, &cfg(r#"{"add_mono":{"languages":["eng"]}}"#));
+        assert!(plan.iter().all(|a| a.action == AudioActionKind::Copy));
     }
 
     #[test]
