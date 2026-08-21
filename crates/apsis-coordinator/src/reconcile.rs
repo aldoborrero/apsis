@@ -7,7 +7,9 @@ use std::path::PathBuf;
 
 use apsis_common::config::Library;
 use apsis_common::{Job, JobPublisher, StateEntry, StateStore, Status, StoreError};
-use apsis_engine::{Probe, Profile, parse_probe, plan};
+use apsis_engine::{
+    FileFacts, Probe, Profile, build_context, parse_probe, plan, resolve_effective_profile,
+};
 use async_trait::async_trait;
 use thiserror::Error;
 use time::OffsetDateTime;
@@ -18,6 +20,8 @@ pub(crate) enum ReconcileError {
     Store(#[from] StoreError),
     #[error("probe: {0}")]
     Probe(#[from] std::io::Error),
+    #[error("profile-rule overrides: {0}")]
+    Override(#[from] apsis_engine::EngineError),
 }
 
 /// What a single-file reconcile did.
@@ -90,9 +94,35 @@ impl<S: StateStore, Q: JobPublisher, P: Prober> Reconciler<S, Q, P> {
             return Ok(ReconcileOutcome::Skipped);
         }
 
-        // Changed/new → probe + plan (the only decision point).
+        // Changed/new → probe, resolve profile-rule overrides, then plan (the only
+        // decision point). Skip-evaluation inside plan() sees the EFFECTIVE profile,
+        // so a rule may set a value a gate reads (data-model §resolution order).
         let probe = self.prober.probe(path).await?;
-        let file_plan = plan(path, &probe, profile);
+        let effective = if profile.rules.is_empty() {
+            profile.clone()
+        } else {
+            // File facts the CEL context needs beyond the probe: `size` rides on the
+            // `mtime:size` version token; `container` is the path's extension;
+            // `duration` is not yet carried by the probe (contract: 0.0 = unknown).
+            let container = std::path::Path::new(path)
+                .extension()
+                .and_then(|e| e.to_str())
+                .unwrap_or("");
+            let size = ver
+                .rsplit(':')
+                .next()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(0);
+            let facts = FileFacts {
+                path,
+                container,
+                duration: 0.0,
+                size,
+            };
+            let ctx = build_context(&probe, &facts)?;
+            resolve_effective_profile(profile, &profile.rules, &ctx)?
+        };
+        let file_plan = plan(path, &probe, &effective);
 
         if file_plan.should_skip {
             self.store
@@ -113,7 +143,9 @@ impl<S: StateStore, Q: JobPublisher, P: Prober> Reconciler<S, Q, P> {
             version: ver.to_string(),
             profile: library.profile.clone(),
             plan: file_plan,
-            profile_config: profile.clone(),
+            // The worker materializes its command from the EFFECTIVE profile (rules
+            // already applied); it never sees rules (Constitution III).
+            profile_config: effective,
             enqueued_at: OffsetDateTime::now_utc(),
         };
         self.publisher.publish(&job).await?;
@@ -280,5 +312,34 @@ mod tests {
             .unwrap();
         assert_eq!(out, ReconcileOutcome::Compliant);
         assert_eq!(calls.load(Ordering::SeqCst), 2, "changed file is re-probed");
+    }
+
+    fn profile_with_rule() -> Profile {
+        // A rule that fires on an h264 source and retargets the codec to AV1.
+        serde_json::from_str(
+            r#"{"video":{"codec":"hevc","skip_codecs":["hevc"]},"audio":{},"subtitles":{},
+                "output":{"container":"mkv"},
+                "rule":[{"when":"video != null && video.codec == 'h264'",
+                         "set":{"video.codec":"av1"}}]}"#,
+        )
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn rule_override_reaches_enqueued_job() {
+        // The h264 source triggers the rule → the effective profile targets AV1, and
+        // the enqueued job carries that EFFECTIVE profile_config (the worker never
+        // sees rules — Constitution III).
+        let (r, _) = reconciler(video("h264"));
+        let out = r
+            .reconcile_file("/hdd/tv/r.mkv", "3:3", &library(), &profile_with_rule())
+            .await
+            .unwrap();
+        assert_eq!(out, ReconcileOutcome::Enqueued);
+        assert_eq!(
+            r.publisher.published()[0].profile_config.video.codec,
+            apsis_engine::VideoCodec::Av1,
+            "rule-set codec reached the job"
+        );
     }
 }
