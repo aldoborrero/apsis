@@ -44,7 +44,8 @@ pub enum Outcome {
 /// Carries the abstract [`FilePlan`] (engine output), not an ffmpeg command: the
 /// worker materializes the command for its own backend. Media stays on the shared
 /// filesystem; the job is metadata only.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+// No `Eq`: `profile_config: Profile` carries rule `SetValue`s wrapping `serde_json::Value`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Job {
     pub id: Ulid,
     /// Coordinator-space absolute path (worker applies its `path_map`).

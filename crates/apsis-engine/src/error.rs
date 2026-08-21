@@ -20,6 +20,12 @@ pub enum EngineError {
     #[error("unsupported profile option: {0}")]
     Unsupported(String),
 
+    /// A profile-rule CEL expression failed to compile (syntax error) or to
+    /// evaluate/convert against the file context, or a rule's `set` targets an
+    /// unknown/invalid field (US2 override resolution).
+    #[error("profile-rule override error: {0}")]
+    Override(String),
+
     #[cfg(feature = "probe-exec")]
     #[error("ffprobe I/O error: {0}")]
     Ffprobe(#[from] std::io::Error),

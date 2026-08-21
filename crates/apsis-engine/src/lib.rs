@@ -46,6 +46,7 @@ pub mod config;
 mod constants;
 pub mod error;
 pub mod ffmpeg;
+pub mod overrides;
 pub mod plan;
 pub mod probe;
 pub mod subtitles;
@@ -59,6 +60,7 @@ pub use config::{
 };
 pub use error::EngineError;
 pub use ffmpeg::FfmpegCommand;
+pub use overrides::{CEL_CONTEXT_VERSION, FileFacts, build_context, resolve_effective_profile};
 pub use plan::{
     AudioTrackPlan, FilePlan, OutputPlan, PlanReason, PlanScope, PlanStatus, ReasonCode, SubAction,
     SubtitleTrackPlan, TrackAction, VideoAction, VideoPlan, plan,

@@ -16,7 +16,7 @@ serde_json = "1"
 thiserror = "2"
 # CEL profile-rule overrides (US2). The clarkmcc/cel-rust project, renamed from
 # `cel-interpreter` (≤0.10) to `cel` — a pure, side-effect-free expression evaluator.
-cel = "0.14"
+cel = { version = "0.14", features = ["json"] }
 # garde (profile validation) is added in the Foundational phase with config.rs.
 
 [lints]
