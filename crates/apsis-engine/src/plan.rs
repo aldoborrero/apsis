@@ -13,7 +13,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::audio::{AudioAction, AudioActionKind, build_audio_plan};
-use crate::config::{HdrPolicy, Profile, VideoCodec};
+use crate::config::{Bitrate, HdrPolicy, Profile, VideoCodec};
 use crate::probe::{Probe, StreamInfo};
 use crate::subtitles::filter_subtitles;
 
@@ -85,6 +85,10 @@ pub struct AudioTrackPlan {
     pub target_codec: String,
     pub source_channels: Option<u32>,
     pub target_channels: u32,
+    /// Encode bitrate for `Encode` tracks (default/unused for `Copy`); the value the
+    /// command materializes, so `add_stereo`/`add_mono`/`transcode` each keep their own.
+    #[serde(default)]
+    pub bitrate: Bitrate,
     pub title_before: Option<String>,
     pub title_after: String,
     pub default: bool,
@@ -412,6 +416,7 @@ pub fn plan(input_path: &str, probe: &Probe, profile: &Profile) -> FilePlan {
             target_codec: expected_codec.clone(),
             source_channels: current.map(|c| c.channels),
             target_channels: expected_channels,
+            bitrate: action.bitrate.clone(),
             title_before: current.map(|c| c.title.clone()),
             title_after: expected_title.clone(),
             default,

@@ -19,6 +19,7 @@ pub struct FfmpegCommand {
     codecs: BTreeMap<usize, (String, Vec<(String, String)>)>,
     metadata: Vec<(usize, String, String)>,
     dispositions: BTreeMap<usize, String>,
+    extra_output_args: Vec<String>,
     global_opts: Vec<String>,
     vaapi_device: Option<String>,
     vaapi_name: String,
@@ -37,6 +38,7 @@ impl Default for FfmpegCommand {
             codecs: BTreeMap::new(),
             metadata: Vec::new(),
             dispositions: BTreeMap::new(),
+            extra_output_args: Vec::new(),
             global_opts: vec!["-y".to_string(), "-nostdin".to_string()],
             vaapi_device: None,
             vaapi_name: "va".to_string(),
@@ -126,6 +128,12 @@ impl FfmpegCommand {
         self.output = path.to_string();
     }
 
+    /// Append raw output-side ffmpeg args (the profile's `custom_args` escape hatch),
+    /// emitted just before the output file — part of the single command, never a 2nd pass.
+    pub fn add_output_args(&mut self, args: &[String]) {
+        self.extra_output_args.extend(args.iter().cloned());
+    }
+
     fn use_hw_decode(&self) -> bool {
         match &self.input_codec {
             Some(c) => self.vaapi_hw_decode_codecs.iter().any(|x| x == c),
@@ -200,6 +208,7 @@ impl FfmpegCommand {
             args.push(value.clone());
         }
 
+        args.extend(self.extra_output_args.iter().cloned());
         args.push(self.output.clone());
         args
     }

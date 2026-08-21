@@ -117,23 +117,14 @@ pub fn build_command(
         if item.action == TrackAction::Copy {
             cmd.set_codec(a_idx, "copy", &[]);
         } else {
-            // A generated mono track (1ch) uses add_mono's bitrate; stereo/other
-            // downmixes use add_stereo's. Both read from the profile (source of truth).
-            let bitrate = if item.target_channels == 1 {
-                profile
-                    .audio
-                    .add_mono
-                    .as_ref()
-                    .map_or("64k", |m| m.bitrate.as_arg())
-            } else {
-                profile.audio.add_stereo.bitrate.as_arg()
-            };
+            // The encode bitrate rides on the plan item (add_stereo/add_mono/transcode
+            // each set their own) — one source of truth, no divergence.
             cmd.set_codec(
                 a_idx,
                 &item.target_codec,
                 &[
                     ("ac", item.target_channels.to_string()),
-                    ("b", bitrate.to_string()),
+                    ("b", item.bitrate.as_arg().to_string()),
                 ],
             );
         }
@@ -154,6 +145,18 @@ pub fn build_command(
         cmd.set_disposition(s_idx, if item.default { "default" } else { "0" });
     }
     // CC recovery (cc_subtitle_path) is deferred — Phase 2, `_RECOVER_CC` parked.
+
+    // Output-level knobs (spec 004): metadata/chapters stripping, then the raw
+    // custom_args escape hatch — all in the single command, before the output file.
+    let mut extra: Vec<String> = Vec::new();
+    if profile.output.strip_metadata {
+        extra.extend(["-map_metadata".to_string(), "-1".to_string()]);
+    }
+    if !profile.output.keep_chapters {
+        extra.extend(["-map_chapters".to_string(), "-1".to_string()]);
+    }
+    extra.extend(profile.video.custom_args.iter().cloned());
+    cmd.add_output_args(&extra);
 
     cmd.set_output(&plan.output.output_path);
     Ok(cmd)
@@ -405,6 +408,30 @@ mod tests {
         plan.audio[0].source_index = None; // Python asserts source_index is not None
         let err = vaapi().build(&plan, &profile()).unwrap_err();
         assert!(matches!(err, EngineError::PlanProbeMismatch(_)));
+    }
+
+    #[test]
+    fn output_knobs_and_custom_args_precede_output() {
+        let prof: Profile = serde_json::from_str(
+            r#"{"video":{"codec":"hevc","skip_codecs":[],"custom_args":["-x265-params","log-level=none"]},
+                "audio":{},"subtitles":{},
+                "output":{"container":"mkv","strip_metadata":true,"keep_chapters":false}}"#,
+        )
+        .unwrap();
+        let probe = Probe {
+            video: Some(video("h264")),
+            ..Default::default()
+        };
+        let p = plan("in.mkv", &probe, &prof);
+        let args = vaapi().build(&p, &prof).unwrap().build();
+        let joined = args.join(" ");
+        assert!(joined.contains("-map_metadata -1"), "{joined}");
+        assert!(joined.contains("-map_chapters -1"), "{joined}");
+        assert!(joined.contains("-x265-params log-level=none"), "{joined}");
+        // the output file is the last arg; custom_args come before it (single pass)
+        assert_eq!(args.last().map(String::as_str), Some("in.mkv"));
+        let cx = args.iter().position(|a| a == "-x265-params").unwrap();
+        assert!(cx < args.len() - 1);
     }
 
     #[test]

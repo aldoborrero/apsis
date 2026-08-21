@@ -2,7 +2,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use crate::config::AudioConfig;
+use crate::config::{AudioConfig, Bitrate};
 use crate::constants::is_commentary;
 use crate::probe::StreamInfo;
 
@@ -12,19 +12,22 @@ pub enum AudioActionKind {
     Encode,
 }
 
-/// One planned output audio track: `Copy` (passthrough) or `Encode` (new AAC stereo).
-/// The encode bitrate is not carried here — `command.rs` reads it from the profile's
-/// `add_stereo` (the single source of truth), so no plan/command divergence is possible.
+/// One planned output audio track: `Copy` (passthrough) or `Encode` (transcode /
+/// generated stereo / generated mono). `bitrate` is the encode bitrate (unused for
+/// `Copy`) — carried on the action so a stereo/mono/transcode encode each keeps its
+/// own bitrate, the single source of truth the command materializes.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AudioAction {
     pub stream: StreamInfo,
     pub action: AudioActionKind,
     pub codec: String,
     pub channels: u32,
+    pub bitrate: Bitrate,
 }
 
 /// Build the ordered list of audio actions from probe data and config.
 #[must_use]
+#[allow(clippy::too_many_lines)] // a faithful sequential selection pass reads best whole
 pub fn build_audio_plan(streams: &[StreamInfo], config: &AudioConfig) -> Vec<AudioAction> {
     // 1. Filter to keep_languages (empty = keep all); never drop ALL audio.
     let mut kept: Vec<&StreamInfo> = if config.keep_languages.is_empty() {
@@ -96,12 +99,28 @@ pub fn build_audio_plan(streams: &[StreamInfo], config: &AudioConfig) -> Vec<Aud
     let mut actions = Vec::new();
     for s in kept {
         if s.channels <= 2 || config.preserve_surround {
-            actions.push(AudioAction {
-                stream: s.clone(),
-                action: AudioActionKind::Copy,
-                codec: String::new(),
-                channels: 0,
-            });
+            // With `transcode`, the kept track is re-encoded (channels capped by
+            // `max_channels`); otherwise it is copied through.
+            if let Some(tc) = &config.transcode {
+                let channels = config
+                    .max_channels
+                    .map_or(s.channels, |m| s.channels.min(m));
+                actions.push(AudioAction {
+                    stream: s.clone(),
+                    action: AudioActionKind::Encode,
+                    codec: tc.codec.clone(),
+                    channels,
+                    bitrate: tc.bitrate.clone(),
+                });
+            } else {
+                actions.push(AudioAction {
+                    stream: s.clone(),
+                    action: AudioActionKind::Copy,
+                    codec: String::new(),
+                    channels: 0,
+                    bitrate: Bitrate::default(),
+                });
+            }
         }
         if s.channels > config.add_stereo.channels
             && stereo_langs.contains(s.language.as_str())
@@ -112,6 +131,7 @@ pub fn build_audio_plan(streams: &[StreamInfo], config: &AudioConfig) -> Vec<Aud
                 action: AudioActionKind::Encode,
                 codec: config.add_stereo.codec.clone(),
                 channels: config.add_stereo.channels,
+                bitrate: config.add_stereo.bitrate.clone(),
             });
             stereo_present.insert(s.language.clone());
         }
@@ -125,6 +145,7 @@ pub fn build_audio_plan(streams: &[StreamInfo], config: &AudioConfig) -> Vec<Aud
                 action: AudioActionKind::Encode,
                 codec: mono.codec.clone(),
                 channels: 1,
+                bitrate: mono.bitrate.clone(),
             });
             mono_present.insert(s.language.clone());
         }
@@ -184,6 +205,29 @@ mod tests {
         let mono = [audio(0, "eng", 1, "")];
         let plan = build_audio_plan(&mono, &cfg(r#"{"add_mono":{"languages":["eng"]}}"#));
         assert!(plan.iter().all(|a| a.action == AudioActionKind::Copy));
+    }
+
+    #[test]
+    fn transcode_reencodes_kept_tracks_with_max_channels() {
+        let streams = [audio(0, "eng", 6, "")];
+        // transcode + max_channels: the 5.1 track becomes an opus encode capped to 2ch.
+        let plan = build_audio_plan(
+            &streams,
+            &cfg(
+                r#"{"preserve_surround":true,"transcode":{"codec":"opus","bitrate":"160k"},"max_channels":2}"#,
+            ),
+        );
+        assert_eq!(plan.len(), 1);
+        assert_eq!(plan[0].action, AudioActionKind::Encode);
+        assert_eq!(plan[0].codec, "opus");
+        assert_eq!(plan[0].channels, 2, "capped by max_channels");
+        assert_eq!(plan[0].bitrate.as_arg(), "160k");
+        // without max_channels, transcode preserves the source channel count
+        let plan = build_audio_plan(
+            &streams,
+            &cfg(r#"{"preserve_surround":true,"transcode":{"codec":"opus","bitrate":"160k"}}"#),
+        );
+        assert_eq!(plan[0].channels, 6);
     }
 
     #[test]
