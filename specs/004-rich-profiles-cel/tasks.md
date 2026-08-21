@@ -85,19 +85,20 @@ with new fields plans correctly; existing `scheduler.toml` loads unchanged.
   (`MonoConfig`), `max_channels`, `normalize`; `SubtitleConfig` + `order`, `forced_only`,
   `extract`; `OutputConfig` + `conform`, `strip_metadata`, `keep_chapters`. Tests:
   `deserializes_spec004_coverage_fields`, `quality_mode_forms_and_rc_opts`.
-- [ ] T009 [US1] `crates/apsis-engine/src/audio.rs`: construct `transcode` (re-encode kept),
-  `add_mono` (from best kept source), `max_channels`, `normalize`; consolidate the keep-≥1-audio
-  failsafe (one guard covering all filters, per data-model §invariant).
-- [ ] T010 [US1] `crates/apsis-engine/src/subtitles.rs`: `forced_only` → `order` → `extract`
-  (sidecar copy; in-container track still kept unless filtered).
-- [ ] T011 [US1] `crates/apsis-engine/src/plan.rs`: skip-gate evaluation (`skip_codecs` →
-  `skip_if_*`); `max_resolution`+`crop` into `VideoPlan` (crop-then-scale); `conform` after all
-  selection (never drops the last audio). Implement the fixed pipeline in
-  data-model §"Resolution & construction order".
-- [ ] T012 [US1] `crates/apsis-engine/src/command.rs`: materialize new plan fields into the
-  **single** ffmpeg command — preset, scale/crop filters, audio encode, metadata/chapters,
-  `custom_args` appended last (never a 2nd pass); `quality.mode = auto` → `-qp` (VAAPI) / `-crf`
-  (CPU). Adapt to the `Bitrate` type for audio bitrate args.
+- [x] T009 [US1] `crates/apsis-engine/src/audio.rs` + `command.rs`: `transcode` (re-encode kept),
+  `add_mono` (from best kept source), `max_channels` done; `normalize` = single-pass `loudnorm`
+  on encoded tracks only (a copy can't be filtered). Keep-≥1-audio failsafe already per-filter.
+- [~] T010 [US1] `crates/apsis-engine/src/subtitles.rs`: `forced_only` + `order` done.
+  **`extract` DEFERRED** — a sidecar `.srt` is a *second* ffmpeg output whose file lifecycle
+  must interact with the worker's temp-write + atomic-replace, and image subs (PGS/VobSub) need
+  OCR, not ffmpeg. Own increment/spec, not a command-layer tweak.
+- [x] T011 [US1] `crates/apsis-engine/src/plan.rs` + `command.rs`: skip-gates (`skip_if_*`),
+  `conform` (subtitles), `max_resolution` (per-backend `scale`/`scale_vaapi`, downscale-only,
+  encode-only). **`crop` DEFERRED** — autocrop needs `cropdetect` (an analysis pass), which
+  conflicts with single-pass (Principle III). audio-conform DEFERRED (codec ambiguity).
+- [x] T012 [US1] `crates/apsis-engine/src/command.rs`: preset, `scale` filters, audio encode,
+  metadata/chapters, `custom_args` last, `quality.mode` rc-opts, `Bitrate` audio args — all in
+  the single command. (crop filter deferred with T011.)
 
 **Checkpoint**: US1 fully functional — a complete policy expressible + tested, back-compat intact.
 
