@@ -152,18 +152,20 @@ never the daemon; evaluation pure/terminating.
 
 ### Tests for US3
 
-- [ ] T017 [P] [US3] Tests: syntax error / unknown field / type mismatch / static out-of-range
-  `set` → **config load** error (fail-fast). Computed out-of-range `set` → per-file error, file
-  skipped, daemon survives, other files still processed.
+- [x] T017 [P] [US3] Tests: config-load rejects syntax / unknown context field / static
+  out-of-range / unknown path (5 in `config.rs`); engine `validate_rules` accepts sane + rejects
+  static; the FR-013/FR-015 split (`height/50` loads at canary, fails a 3000-line file).
 
 ### Implementation for US3
 
-- [ ] T018 [US3] Load-time validation: on config load, **compile** + **canary-evaluate** every
-  `when`/`set` CEL against a synthetic full-context probe (all contract fields populated); a
-  failure aborts startup, wired into the existing `garde`/figment fail-fast path. (research R2)
-- [ ] T019 [US3] Per-file validation of the resolved effective profile (FR-015): a computed `set`
-  value violating a field's rules → structured `tracing` error, the file is skipped (invalid plan,
-  not transcoded), the daemon and sibling files are unaffected.
+- [x] T018 [US3] `apsis_engine::validate_rules(base, rules)`: compile + canary-evaluate every
+  `when`/`${…}` `set` against a synthetic full context (normal 1080p file), then apply each rule to
+  the base and re-deserialize (unknown path / type / static range). Wired into `scheduler_from`
+  (fail-fast) as `ConfigError::InvalidRule`. (research R2)
+- [x] T019 [US3] Per-file validation — **already delivered by the US2 reconcile wiring**: a
+  CEL-computed value out of range for a real file fails `resolve_effective_profile` → the file is
+  marked `Failed@ver` (+ `apsis_override_failed_total`), daemon and siblings unaffected (FR-015).
+  Now covered by a test.
 
 **Checkpoint**: all three stories independently functional.
 
