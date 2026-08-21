@@ -187,6 +187,88 @@ pub fn resolve_effective_profile(
     })
 }
 
+/// Validate a profile's rules at config load (FR-013), fail-fast. For each rule it
+/// compiles + canary-evaluates `when` and every `${…}` `set` expression against a full
+/// synthetic context (catching syntax errors, unknown context fields and type errors),
+/// then applies the rule to the base profile and re-deserializes it (catching unknown
+/// dotted paths, type mismatches, and static out-of-range values).
+///
+/// This does **not** catch every runtime range outcome: a `${…}` value is evaluated
+/// against representative canary inputs, so a rule that only goes out of range for some
+/// *real* file passes here and fails that file's reconcile instead (FR-015). Rules are
+/// validated independently against `base` (cross-rule interactions are a per-file
+/// concern).
+///
+/// # Errors
+/// [`EngineError::Override`] describing the first offending rule; [`EngineError::ParseJson`]
+/// if the base profile cannot be serialized.
+pub fn validate_rules(base: &Profile, rules: &[ProfileRule]) -> Result<(), EngineError> {
+    if rules.is_empty() {
+        return Ok(());
+    }
+    let ctx = canary_context()?;
+    let base_json = serde_json::to_value(base)?;
+    for (ri, rule) in rules.iter().enumerate() {
+        // `when`: compile + canary-eval (must be a bool); the match result is ignored.
+        rule_matches(rule, &ctx, ri)?;
+        // Apply this rule's `set` onto a fresh base and re-validate the whole profile.
+        let mut json = base_json.clone();
+        for (path, sv) in &rule.set {
+            let value = resolve_set_value(sv, path, &ctx, ri)?;
+            apply_dotted(&mut json, path, value, ri)?;
+        }
+        serde_json::from_value::<Profile>(json).map_err(|e| {
+            EngineError::Override(format!("rule[{ri}] produces an invalid profile: {e}"))
+        })?;
+    }
+    Ok(())
+}
+
+/// A synthetic CEL context where every documented field is present with a representative
+/// value — a normal 1080p file — so canary evaluation surfaces syntax/unknown-field/type
+/// errors at load without spuriously failing sane rules on range.
+fn canary_context() -> Result<Context<'static>, EngineError> {
+    let probe = Probe {
+        video: Some(StreamInfo {
+            index: 0,
+            codec_type: "video".into(),
+            codec: "h264".into(),
+            width: 1920,
+            height: 1080,
+            bitrate: 8_000_000,
+            bit_depth: 8,
+            color_transfer: "bt709".into(),
+            is_default: true,
+            ..Default::default()
+        }),
+        audio: vec![StreamInfo {
+            index: 1,
+            codec_type: "audio".into(),
+            codec: "eac3".into(),
+            language: "eng".into(),
+            title: "Surround".into(),
+            channels: 6,
+            is_default: true,
+            ..Default::default()
+        }],
+        subtitles: vec![StreamInfo {
+            index: 2,
+            codec_type: "subtitle".into(),
+            codec: "subrip".into(),
+            language: "eng".into(),
+            forced: false,
+            ..Default::default()
+        }],
+    };
+    let facts = FileFacts {
+        path: "/media/tv/Show/S01E01.mkv",
+        container: "mkv",
+        duration: 1800.0,
+        size: 4_000_000_000,
+    };
+    build_context(&probe, &facts)
+}
+
 fn rule_matches(rule: &ProfileRule, ctx: &Context<'_>, ri: usize) -> Result<bool, EngineError> {
     let when = &rule.when;
     let prog = Program::compile(when).map_err(|e| {
@@ -440,6 +522,36 @@ mod tests {
             rules(r#"[{"when":"true","set":{"video.quality.value":"  ${video.height / 90} "}}]"#);
         let eff = resolve_effective_profile(&base_profile(), &r, &ctx).unwrap();
         assert_eq!(eff.video.quality.value, QualityValue::Num(24));
+    }
+
+    #[test]
+    fn validate_rules_accepts_sane_rules_and_rejects_static_errors() {
+        assert!(validate_rules(&base_profile(), &rules(SPEC_RULES)).is_ok());
+        // Static out-of-range literal → caught at load.
+        let bad = rules(r#"[{"when":"true","set":{"video.quality.value":99}}]"#);
+        assert!(validate_rules(&base_profile(), &bad).is_err());
+        // Unknown context field in `when` → caught at load (canary eval).
+        let bad = rules(r#"[{"when":"video.heigth > 0","set":{"video.codec":"av1"}}]"#);
+        assert!(validate_rules(&base_profile(), &bad).is_err());
+    }
+
+    #[test]
+    fn computed_out_of_range_passes_load_but_fails_that_file() {
+        // `height / 50`: 1080 → 21 (in range) at canary, so it LOADS (FR-013)…
+        let r = rules(r#"[{"when":"true","set":{"video.quality.value":"${video.height / 50}"}}]"#);
+        assert!(
+            validate_rules(&base_profile(), &r).is_ok(),
+            "sane at canary"
+        );
+
+        // …but a 3000-line source computes 60, out of the 0..=51 range → that file's
+        // resolution fails loudly (FR-015), to be skipped at reconcile (not the daemon).
+        let probe = Probe {
+            video: Some(video("h264", 5333, 3000)),
+            ..Default::default()
+        };
+        let ctx = build_context(&probe, &facts()).unwrap();
+        assert!(resolve_effective_profile(&base_profile(), &r, &ctx).is_err());
     }
 
     #[test]

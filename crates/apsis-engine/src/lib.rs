@@ -60,7 +60,9 @@ pub use config::{
 };
 pub use error::EngineError;
 pub use ffmpeg::FfmpegCommand;
-pub use overrides::{CEL_CONTEXT_VERSION, FileFacts, build_context, resolve_effective_profile};
+pub use overrides::{
+    CEL_CONTEXT_VERSION, FileFacts, build_context, resolve_effective_profile, validate_rules,
+};
 pub use plan::{
     AudioTrackPlan, FilePlan, OutputPlan, PlanReason, PlanScope, PlanStatus, ReasonCode, SubAction,
     SubtitleTrackPlan, TrackAction, VideoAction, VideoPlan, plan,

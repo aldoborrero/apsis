@@ -44,6 +44,8 @@ pub enum ConfigError {
     RelativePath { library: String, path: String },
     #[error("verify.max_size_ratio must be finite and >= 1.0, got {0}")]
     BadRatio(f64),
+    #[error("profile {profile:?}: {message}")]
+    InvalidRule { profile: String, message: String },
 }
 
 impl From<figment::Error> for ConfigError {
@@ -310,6 +312,17 @@ fn scheduler_from(fig: &Figment) -> Result<SchedulerConfig, ConfigError> {
             });
         }
     }
+    // Fail-fast on invalid CEL profile rules (FR-013): compile + canary-evaluate every
+    // rule so a syntax error / unknown context field / static out-of-range refuses to
+    // start, rather than surfacing per-file at reconcile.
+    for (name, profile) in &cfg.profiles {
+        apsis_engine::validate_rules(profile, &profile.rules).map_err(|e| {
+            ConfigError::InvalidRule {
+                profile: name.clone(),
+                message: e.to_string(),
+            }
+        })?;
+    }
     Ok(cfg)
 }
 
@@ -490,6 +503,75 @@ mod tests {
                 "ratio {bad} should be rejected, got {err}"
             );
         }
+    }
+
+    // A scheduler config with one library + a `tv` profile carrying `rule_toml`.
+    fn sched_with_rule(rule_toml: &str) -> Result<SchedulerConfig, ConfigError> {
+        let toml = format!(
+            r#"
+            [[library]]
+            name = "tv"
+            path = "/hdd/tv"
+            profile = "tv"
+            [profiles.tv.video]
+            codec = "hevc"
+            [profiles.tv.audio]
+            [profiles.tv.subtitles]
+            [profiles.tv.output]
+            container = "mkv"
+            {rule_toml}
+        "#
+        );
+        scheduler_from(&Figment::new().merge(Toml::string(&toml)))
+    }
+
+    #[test]
+    fn good_rules_load() {
+        let cfg = sched_with_rule(
+            r#"
+            [[profiles.tv.rule]]
+            when = "video.height >= 2160"
+            set = { "video.codec" = "av1", "video.quality.value" = "${video.height >= 2160 ? 24 : 22}" }
+        "#,
+        )
+        .unwrap();
+        assert_eq!(cfg.profiles["tv"].rules.len(), 1);
+    }
+
+    #[test]
+    fn cel_syntax_error_fails_load() {
+        let err = sched_with_rule("[[profiles.tv.rule]]\nwhen = \"video.height >=\"\nset = {}")
+            .unwrap_err();
+        assert!(matches!(err, ConfigError::InvalidRule { .. }), "{err}");
+    }
+
+    #[test]
+    fn unknown_context_field_fails_load() {
+        // `heigth` is not a CEL context field — canary evaluation surfaces it at load.
+        let err = sched_with_rule(
+            "[[profiles.tv.rule]]\nwhen = \"video.heigth >= 2160\"\nset = { \"video.codec\" = \"av1\" }",
+        )
+        .unwrap_err();
+        assert!(matches!(err, ConfigError::InvalidRule { .. }), "{err}");
+    }
+
+    #[test]
+    fn static_out_of_range_set_fails_load() {
+        // A literal 99 on the 0..=51 quality.value is statically invalid → load error.
+        let err = sched_with_rule(
+            "[[profiles.tv.rule]]\nwhen = \"true\"\nset = { \"video.quality.value\" = 99 }",
+        )
+        .unwrap_err();
+        assert!(matches!(err, ConfigError::InvalidRule { .. }), "{err}");
+    }
+
+    #[test]
+    fn unknown_set_path_fails_load() {
+        let err = sched_with_rule(
+            "[[profiles.tv.rule]]\nwhen = \"true\"\nset = { \"video.bogus\" = \"x\" }",
+        )
+        .unwrap_err();
+        assert!(matches!(err, ConfigError::InvalidRule { .. }), "{err}");
     }
 
     #[test]
