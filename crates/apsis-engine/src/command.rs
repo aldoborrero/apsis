@@ -137,14 +137,16 @@ pub fn build_command(
         } else {
             // The encode bitrate rides on the plan item (add_stereo/add_mono/transcode
             // each set their own) — one source of truth, no divergence.
-            cmd.set_codec(
-                a_idx,
-                &item.target_codec,
-                &[
-                    ("ac", item.target_channels.to_string()),
-                    ("b", item.bitrate.as_arg().to_string()),
-                ],
-            );
+            let mut aopts = vec![
+                ("ac", item.target_channels.to_string()),
+                ("b", item.bitrate.as_arg().to_string()),
+            ];
+            // Loudness-normalize encoded tracks (single-pass EBU R128 target); a
+            // copied track can't be filtered, so normalize only touches encodes.
+            if profile.audio.normalize {
+                aopts.push(("filter", "loudnorm=I=-16:TP=-1.5:LRA=11".to_string()));
+            }
+            cmd.set_codec(a_idx, &item.target_codec, &aopts);
         }
         cmd.set_metadata(a_idx, "title", &item.title_after);
         cmd.set_disposition(a_idx, if item.default { "default" } else { "0" });
@@ -549,5 +551,32 @@ mod tests {
         let plan_sd = crate::plan::plan("in.mkv", &probe_sd, &prof);
         let joined = vaapi().build(&plan_sd, &prof).unwrap().build().join(" ");
         assert!(!joined.contains("scale_vaapi"), "no downscale: {joined}");
+    }
+
+    #[test]
+    fn normalize_applies_loudnorm_to_encoded_audio_only() {
+        // 6ch source + add_stereo + normalize: the generated stereo (a:1) is an
+        // encode and gets loudnorm; the copied 5.1 (a:0) is untouched.
+        let prof: Profile = serde_json::from_str(
+            r#"{"video":{"codec":"hevc","skip_codecs":["hevc"]},
+                "audio":{"add_stereo":{"languages":["eng"]},"normalize":true},
+                "subtitles":{},"output":{"container":"mkv"}}"#,
+        )
+        .unwrap();
+        let probe = Probe {
+            video: Some(video("hevc")),
+            audio: vec![audio(1, "eng", 6, "eac3")],
+            ..Default::default()
+        };
+        let plan = plan("in.mkv", &probe, &prof);
+        let joined = vaapi().build(&plan, &prof).unwrap().build().join(" ");
+        assert!(
+            joined.contains("-filter:a:1 loudnorm=I=-16:TP=-1.5:LRA=11"),
+            "{joined}"
+        );
+        assert!(
+            !joined.contains("-filter:a:0"),
+            "copy stays unfiltered: {joined}"
+        );
     }
 }

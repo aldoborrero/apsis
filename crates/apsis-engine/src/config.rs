@@ -420,6 +420,10 @@ pub struct AudioConfig {
     pub add_mono: Option<MonoConfig>,
     #[serde(default)]
     pub max_channels: Option<u32>,
+    /// EBU R128 loudness-normalize audio via a single-pass `loudnorm` filter.
+    /// Applies only to tracks already being encoded (transcode / generated
+    /// stereo / generated mono) — a `copy` cannot be filtered, and forcing a
+    /// re-encode of an otherwise-copied track has no unambiguous target codec.
     #[serde(default)]
     pub normalize: bool,
 }
