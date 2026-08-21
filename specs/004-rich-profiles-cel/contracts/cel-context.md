@@ -13,9 +13,15 @@ by `apsis-engine` from the `Probe` + file facts, immediately before override res
 | `audio` | `list<Audio>` | probe audio streams | possibly empty |
 | `subtitles` | `list<Subtitle>` | probe subtitle streams | possibly empty |
 | `path` | `string` | coordinator-space file path | e.g. `/media/tv/show/ep.mkv` |
-| `container` | `string` | source container | e.g. `mkv`, `avi` (no dot) |
+| `container` | `string` | source container | e.g. `mkv`, `avi` (no dot); **lower-cased** (`ep.MKV` → `mkv`) |
 | `duration` | `double` | seconds | `0.0` if unknown |
 | `size` | `int` | bytes | file size |
+
+> **Implementation status (US2):** `duration` is currently always `0.0` — the probe
+> ingests `-show_streams` but not `-show_format`, so it does not yet carry container
+> duration. **Predicates on `duration` therefore evaluate against `0.0` and are inert**
+> (`duration < 300` is always true). Populating it (adding `-show_format` to the probe)
+> is a tracked follow-up; until then, do not gate rules on `duration`.
 
 ## `Video`
 

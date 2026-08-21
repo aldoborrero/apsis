@@ -10,11 +10,15 @@
 //! profile is revalidated by the exact same rules as a static one (`deny_unknown_fields`
 //! turns a mistyped path like `video.heigth` into a hard error; range checks re-run).
 //!
-//! **Literal vs CEL `set` value** (type-directed): a non-string value (int/bool/table)
-//! is a literal. A string is a literal when the target field is itself string-typed,
-//! and a CEL expression otherwise (numeric/bool field) — the one reading that makes both
-//! spec examples (`"video.codec" = "av1"` literal, `"video.quality.value" = "<CEL>"`)
-//! consistent. Computing a string-typed field via CEL is therefore not expressible.
+//! **Literal vs CEL `set` value**: a `set` value is a CEL expression iff it is a string
+//! wrapped in `${…}` (e.g. `"${video.height >= 2160 ? 24 : 22}"`); every other value —
+//! a bare string (`"av1"`), an int, a bool, a table — is a literal assigned verbatim.
+//! The explicit marker is unambiguous where a type-directed heuristic could not be: both
+//! `"video.codec" = "av1"` (literal on a string field) and
+//! `"add_stereo.bitrate" = "${… ? '192k' : '128k'}"` (computed on a string field) target
+//! string-typed fields, so nothing but an explicit marker can tell them apart. `${…}` is
+//! therefore reserved — a profile value that must be the literal text `${x}` is not
+//! expressible (no real codec/preset/bitrate value looks like that).
 
 use cel::{Context, Program, Value as CelValue};
 use serde::Serialize;
@@ -40,30 +44,34 @@ pub struct FileFacts<'a> {
 // --- CEL activation structs: these mirror contracts/cel-context.md field-for-field.
 //     Renaming/removing a field here is a breaking context-version change. ---
 
+// Integer fields are `i64`, not `u32`: the `cel` crate serializes `u32` to `Value::UInt`,
+// and this CEL implementation only does arithmetic between matching operand types — so a
+// `UInt` context field would fail to add/subtract/divide against an `Int` literal (e.g.
+// `video.height / 90`). `i64` → `Value::Int` matches CEL literals and the contract (`int`).
 #[derive(Serialize)]
 struct CtxVideo {
     codec: String,
-    width: u32,
-    height: u32,
-    bitrate: u32,
+    width: i64,
+    height: i64,
+    bitrate: i64,
     hdr: bool,
     color_transfer: String,
-    bit_depth: u32,
+    bit_depth: i64,
 }
 
 #[derive(Serialize)]
 struct CtxAudio {
-    index: u32,
+    index: i64,
     codec: String,
     language: String,
-    channels: u32,
+    channels: i64,
     title: String,
     default: bool,
 }
 
 #[derive(Serialize)]
 struct CtxSubtitle {
-    index: u32,
+    index: i64,
     codec: String,
     language: String,
     forced: bool,
@@ -73,12 +81,12 @@ impl CtxVideo {
     fn from_stream(s: &StreamInfo, hdr: bool) -> Self {
         Self {
             codec: s.codec.clone(),
-            width: s.width,
-            height: s.height,
-            bitrate: s.bitrate,
+            width: i64::from(s.width),
+            height: i64::from(s.height),
+            bitrate: i64::from(s.bitrate),
             hdr,
             color_transfer: s.color_transfer.clone(),
-            bit_depth: s.bit_depth,
+            bit_depth: i64::from(s.bit_depth),
         }
     }
 }
@@ -86,10 +94,10 @@ impl CtxVideo {
 impl CtxAudio {
     fn from_stream(s: &StreamInfo) -> Self {
         Self {
-            index: s.index,
+            index: i64::from(s.index),
             codec: s.codec.clone(),
             language: s.language.clone(),
-            channels: s.channels,
+            channels: i64::from(s.channels),
             title: s.title.clone(),
             default: s.is_default,
         }
@@ -99,7 +107,7 @@ impl CtxAudio {
 impl CtxSubtitle {
     fn from_stream(s: &StreamInfo) -> Self {
         Self {
-            index: s.index,
+            index: i64::from(s.index),
             codec: s.codec.clone(),
             language: s.language.clone(),
             forced: s.forced,
@@ -169,7 +177,7 @@ pub fn resolve_effective_profile(
     for (ri, rule) in rules.iter().enumerate() {
         if rule_matches(rule, ctx, ri)? {
             for (path, sv) in &rule.set {
-                let value = resolve_set_value(sv, &json, path, ctx, ri)?;
+                let value = resolve_set_value(sv, path, ctx, ri)?;
                 apply_dotted(&mut json, path, value, ri)?;
             }
         }
@@ -195,26 +203,21 @@ fn rule_matches(rule: &ProfileRule, ctx: &Context<'_>, ri: usize) -> Result<bool
     }
 }
 
-/// Resolve one `set` value to the JSON to assign — a literal verbatim, or the result
-/// of evaluating it as a CEL expression (see the type-directed rule in the module doc).
+/// Resolve one `set` value to the JSON to assign — a `${…}`-wrapped string is a CEL
+/// expression (evaluated); everything else is a literal assigned verbatim (module doc).
 fn resolve_set_value(
     sv: &SetValue,
-    base: &JsonValue,
     path: &str,
     ctx: &Context<'_>,
     ri: usize,
 ) -> Result<JsonValue, EngineError> {
-    // Non-string literals (int/bool/array/table) are assigned verbatim.
-    let JsonValue::String(expr) = &sv.0 else {
+    // A CEL expression is a string wrapped in `${…}`; every other value is a literal.
+    let Some(expr) = sv.0.as_str().and_then(cel_expr) else {
         return Ok(sv.0.clone());
     };
-    // A string on a string-typed existing field is a literal; otherwise it is CEL.
-    if let Some(JsonValue::String(_)) = lookup_dotted(base, path) {
-        return Ok(sv.0.clone());
-    }
     let prog = Program::compile(expr).map_err(|e| {
         EngineError::Override(format!(
-            "rule[{ri}] `set` {path:?} = {expr:?} failed to compile: {e}"
+            "rule[{ri}] `set` {path:?} = ${{{expr}}} failed to compile: {e}"
         ))
     })?;
     let val = prog.execute(ctx).map_err(|e| {
@@ -227,14 +230,9 @@ fn resolve_set_value(
     })
 }
 
-/// Follow a dotted path through nested JSON objects, or `None` if any segment is
-/// missing or a non-object is traversed.
-fn lookup_dotted<'a>(root: &'a JsonValue, path: &str) -> Option<&'a JsonValue> {
-    let mut cur = root;
-    for seg in path.split('.') {
-        cur = cur.as_object()?.get(seg)?;
-    }
-    Some(cur)
+/// The inner CEL expression of a `${…}`-wrapped string, or `None` for a literal.
+fn cel_expr(s: &str) -> Option<&str> {
+    s.strip_prefix("${").and_then(|r| r.strip_suffix('}'))
 }
 
 /// Assign `value` at `path`, creating intermediate objects for absent (`null`) fields.
@@ -314,10 +312,11 @@ mod tests {
         }
     }
 
-    // The two-rule profile from the spec quickstart/schema.
+    // The two-rule profile from the spec quickstart/schema. `video.codec` is a literal;
+    // `video.quality.value` is a `${…}`-wrapped CEL expression.
     const SPEC_RULES: &str = r#"[
         {"when":"video.height >= 2160",
-         "set":{"video.codec":"av1","video.quality.value":"video.height >= 2160 ? 24 : 22"}},
+         "set":{"video.codec":"av1","video.quality.value":"${video.height >= 2160 ? 24 : 22}"}},
         {"when":"audio.exists(a, a.codec == 'truehd' && a.channels > 6)",
          "set":{"audio.transcode":{"codec":"eac3","bitrate":"640k"}}}
     ]"#;
@@ -361,8 +360,8 @@ mod tests {
 
     #[test]
     fn literal_string_is_not_evaluated_as_cel() {
-        // video.codec is string-typed → "av1" is a literal, never compiled as CEL
-        // (a bare `av1` identifier would fail to resolve if it were).
+        // No `${…}` marker → "av1" is a literal, never compiled as CEL (a bare `av1`
+        // identifier would fail to resolve if it were).
         let probe = Probe {
             video: Some(video("h264", 3840, 2160)),
             ..Default::default()
@@ -371,6 +370,58 @@ mod tests {
         let r = rules(r#"[{"when":"true","set":{"video.codec":"av1"}}]"#);
         let eff = resolve_effective_profile(&base_profile(), &r, &ctx).unwrap();
         assert_eq!(eff.video.codec, VideoCodec::Av1);
+    }
+
+    #[test]
+    fn literal_on_absent_optional_field_stays_literal() {
+        // Regression: an absent Option<String> serializes to null, which the old
+        // type-directed heuristic mis-read as "not a string" → CEL. With the `${…}`
+        // marker, a bare literal on an unset field is unambiguously a literal.
+        let probe = Probe {
+            video: Some(video("h264", 3840, 2160)),
+            ..Default::default()
+        };
+        let ctx = build_context(&probe, &facts()).unwrap();
+        let r = rules(
+            r#"[{"when":"true","set":{"video.max_resolution":"1080p","video.preset":"medium"}}]"#,
+        );
+        let eff = resolve_effective_profile(&base_profile(), &r, &ctx).unwrap();
+        assert_eq!(eff.video.max_resolution.as_deref(), Some("1080p"));
+        assert_eq!(
+            eff.video.preset.as_deref(),
+            Some("medium"),
+            "not the CEL var"
+        );
+    }
+
+    #[test]
+    fn cel_marker_computes_a_string_typed_field() {
+        // Regression: a computed value on a string-typed field — impossible under the
+        // old heuristic — works with the explicit marker.
+        let probe = Probe {
+            video: Some(video("h264", 3840, 2160)),
+            ..Default::default()
+        };
+        let ctx = build_context(&probe, &facts()).unwrap();
+        let r = rules(
+            r#"[{"when":"true","set":{"video.max_resolution":"${video.height >= 2160 ? '2160p' : '1080p'}"}}]"#,
+        );
+        let eff = resolve_effective_profile(&base_profile(), &r, &ctx).unwrap();
+        assert_eq!(eff.video.max_resolution.as_deref(), Some("2160p"));
+    }
+
+    #[test]
+    fn cel_arithmetic_on_context_ints() {
+        // Regression (F1): context numeric fields are Int, so arithmetic against CEL
+        // integer literals works (a UInt field would fail `div`/`add`/`sub`).
+        let probe = Probe {
+            video: Some(video("h264", 3840, 2160)),
+            ..Default::default()
+        };
+        let ctx = build_context(&probe, &facts()).unwrap();
+        let r = rules(r#"[{"when":"true","set":{"video.quality.value":"${video.height / 90}"}}]"#);
+        let eff = resolve_effective_profile(&base_profile(), &r, &ctx).unwrap();
+        assert_eq!(eff.video.quality.value, QualityValue::Num(24), "2160 / 90");
     }
 
     #[test]

@@ -35,6 +35,9 @@ pub(crate) enum ReconcileOutcome {
     Enqueued,
     /// Lost the claim to a concurrent actor.
     Claimed,
+    /// A profile-rule override failed for this file — recorded `Failed` so the
+    /// change-gate suppresses re-probing until the file itself changes (no loop).
+    OverrideFailed,
 }
 
 /// Probe a file to its stream layout. The prod impl shells out to ffprobe; tests
@@ -102,12 +105,14 @@ impl<S: StateStore, Q: JobPublisher, P: Prober> Reconciler<S, Q, P> {
             profile.clone()
         } else {
             // File facts the CEL context needs beyond the probe: `size` rides on the
-            // `mtime:size` version token; `container` is the path's extension;
-            // `duration` is not yet carried by the probe (contract: 0.0 = unknown).
+            // `mtime:size` version token; `container` is the path's extension, lowercased
+            // to match the contract; `duration` is not yet carried by the probe (contract:
+            // 0.0 = unknown).
             let container = std::path::Path::new(path)
                 .extension()
                 .and_then(|e| e.to_str())
-                .unwrap_or("");
+                .unwrap_or("")
+                .to_ascii_lowercase();
             let size = ver
                 .rsplit(':')
                 .next()
@@ -115,12 +120,27 @@ impl<S: StateStore, Q: JobPublisher, P: Prober> Reconciler<S, Q, P> {
                 .unwrap_or(0);
             let facts = FileFacts {
                 path,
-                container,
+                container: &container,
                 duration: 0.0,
                 size,
             };
-            let ctx = build_context(&probe, &facts)?;
-            resolve_effective_profile(profile, &profile.rules, &ctx)?
+            let resolved = build_context(&probe, &facts)
+                .and_then(|ctx| resolve_effective_profile(profile, &profile.rules, &ctx));
+            match resolved {
+                Ok(p) => p,
+                Err(e) => {
+                    // A per-file CEL/override error is deterministic for a fixed probe, so
+                    // record Failed@ver: the change-gate then suppresses re-probing until
+                    // the file changes (never an every-pass re-probe loop — Principle IV).
+                    // Static rule errors will be caught at load in US3.
+                    self.store
+                        .put(path, &entry(Status::Failed, ver, Some(e.to_string())))
+                        .await?;
+                    tracing::Span::current().record("outcome", "override_failed");
+                    tracing::warn!(error = %e, "profile-rule override failed; marked Failed");
+                    return Ok(ReconcileOutcome::OverrideFailed);
+                }
+            }
         };
         let file_plan = plan(path, &probe, &effective);
 
@@ -340,6 +360,38 @@ mod tests {
             r.publisher.published()[0].profile_config.video.codec,
             apsis_engine::VideoCodec::Av1,
             "rule-set codec reached the job"
+        );
+    }
+
+    #[tokio::test]
+    async fn failing_rule_marks_failed_and_stops_reprobing() {
+        // A rule whose predicate references an unknown context field errors at eval.
+        // The file must be recorded Failed@ver and NOT re-probed next pass (no loop).
+        let bad = serde_json::from_str::<Profile>(
+            r#"{"video":{"codec":"hevc","skip_codecs":["hevc"]},"audio":{},"subtitles":{},
+                "output":{"container":"mkv"},
+                "rule":[{"when":"video.bogus > 0","set":{"video.codec":"av1"}}]}"#,
+        )
+        .unwrap();
+        let (r, calls) = reconciler(video("h264"));
+        let out = r
+            .reconcile_file("/hdd/tv/bad.mkv", "5:5", &library(), &bad)
+            .await
+            .unwrap();
+        assert_eq!(out, ReconcileOutcome::OverrideFailed);
+        assert!(r.publisher.is_empty(), "no job for a failed override");
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+
+        // Second pass, same version → gated by the Failed entry, NOT re-probed.
+        let out = r
+            .reconcile_file("/hdd/tv/bad.mkv", "5:5", &library(), &bad)
+            .await
+            .unwrap();
+        assert_eq!(out, ReconcileOutcome::Skipped);
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            1,
+            "failed file not re-probed until it changes"
         );
     }
 }

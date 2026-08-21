@@ -746,13 +746,13 @@ mod tests {
             "absent rules default to empty"
         );
 
-        // A profile with two rules: `when` + a `set` mixing a literal (string on a
-        // string field) and a computed value (string on a numeric field) and a table.
+        // A profile with two rules: `when` + a `set` mixing a literal (`"av1"`), a
+        // `${…}`-wrapped CEL expression, and a table.
         let with_rules = r#"{
             "video":{"codec":"hevc"},"audio":{},"subtitles":{},"output":{},
             "rule":[
                 {"when":"video.height >= 2160",
-                 "set":{"video.codec":"av1","video.quality.value":"video.height >= 2160 ? 24 : 22"}},
+                 "set":{"video.codec":"av1","video.quality.value":"${video.height >= 2160 ? 24 : 22}"}},
                 {"when":"audio.exists(a, a.codec == 'truehd')",
                  "set":{"audio.transcode":{"codec":"eac3","bitrate":"640k"}}}
             ]

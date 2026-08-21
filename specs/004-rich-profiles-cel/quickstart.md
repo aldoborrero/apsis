@@ -58,6 +58,10 @@ set  = { "audio.transcode" = { codec = "eac3", bitrate = "640k" } }
 A 1080p AAC episode matches neither rule → planned with the base `tv` profile. A 2160p TrueHD-7.1
 episode matches both → effective profile = base + AV1 + E-AC3 audio (last-write-wins per field).
 
+Every `set` value above is a **literal**. To *compute* a value from the file, wrap a CEL
+expression in `${…}`, e.g. `"video.quality.value" = "${video.height >= 2160 ? 24 : 22}"` or
+`"video.codec" = "${video.height >= 2160 ? 'av1' : 'hevc'}"`.
+
 ## 3. Validate before deploying
 
 ```bash

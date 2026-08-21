@@ -50,9 +50,10 @@ strip_metadata   = false         # [new]
 keep_chapters    = true          # [new]
 
 # [new] conditional overrides — ordered, last-write-wins per field (research R6)
+# A `set` value is a literal UNLESS it is a string wrapped in ${…} (a CEL expression).
 [[profiles.<name>.rule]]
 when = "video.height >= 2160"                       # CEL predicate (contracts/cel-context.md)
-set  = { "video.codec" = "av1", "video.quality.value" = "video.height >= 2160 ? 24 : 22" }
+set  = { "video.codec" = "av1", "video.quality.value" = "${video.height >= 2160 ? 24 : 22}" }
 
 [[profiles.<name>.rule]]
 when = "audio.exists(a, a.codec == 'truehd')"
@@ -71,4 +72,7 @@ set  = { "audio.transcode" = { codec = "eac3", bitrate = "640k" } }
   `worker.toml` — and validating NVENC portability — is **spec 003**.
 - **Failsafe**: audio filtering never yields zero audio streams when the source had ≥1 (FR-008).
 - **`set` dotted paths** must resolve to a real field; the value is validated as that field
-  (e.g. `"video.quality.value"` obeys the 0–51 range); a value may be a CEL string (computed).
+  (e.g. `"video.quality.value"` obeys the 0–51 range). A value is a literal unless it is a
+  string wrapped in `${…}`, which is a CEL expression evaluated against the file context — so
+  both a literal and a computed value work on the same string-typed field (`"video.codec" =
+  "av1"` vs `"video.codec" = "${video.height >= 2160 ? 'av1' : 'hevc'}"`). `${…}` is reserved.
