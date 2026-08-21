@@ -78,6 +78,12 @@ nix develop --command cargo test -p apsis-engine overrides # rule layering + CEL
 nix develop --command cargo test -p apsis-engine plan      # golden: probe+profile(+rules) -> FilePlan
 ```
 
+> **If a rule errors on a specific file at reconcile time** (a per-file computed range/type
+> error that load validation can't see), that file is recorded `Failed` and the
+> `apsis_override_failed_total` counter increments (alertable via VMAlert). Like any
+> `Failed` file, **fixing the rule does not auto-retry it** while its version is unchanged —
+> touch the file (or clear its KV key) to force re-evaluation.
+
 ## 4. What you do NOT touch
 
 - **Hardware** (VAAPI `sei` device; NVENC — added in spec 003) → `worker.toml`, per host. The

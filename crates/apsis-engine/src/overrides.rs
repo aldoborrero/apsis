@@ -231,8 +231,12 @@ fn resolve_set_value(
 }
 
 /// The inner CEL expression of a `${…}`-wrapped string, or `None` for a literal.
+/// The value is trimmed first, so a stray leading/trailing space around the marker
+/// (`"${expr} "`) is still recognized as CEL rather than silently taken literally.
 fn cel_expr(s: &str) -> Option<&str> {
-    s.strip_prefix("${").and_then(|r| r.strip_suffix('}'))
+    s.trim()
+        .strip_prefix("${")
+        .and_then(|r| r.strip_suffix('}'))
 }
 
 /// Assign `value` at `path`, creating intermediate objects for absent (`null`) fields.
@@ -422,6 +426,20 @@ mod tests {
         let r = rules(r#"[{"when":"true","set":{"video.quality.value":"${video.height / 90}"}}]"#);
         let eff = resolve_effective_profile(&base_profile(), &r, &ctx).unwrap();
         assert_eq!(eff.video.quality.value, QualityValue::Num(24), "2160 / 90");
+    }
+
+    #[test]
+    fn cel_marker_tolerates_surrounding_whitespace() {
+        // A stray space around the marker still parses as CEL (not silently literal).
+        let probe = Probe {
+            video: Some(video("h264", 3840, 2160)),
+            ..Default::default()
+        };
+        let ctx = build_context(&probe, &facts()).unwrap();
+        let r =
+            rules(r#"[{"when":"true","set":{"video.quality.value":"  ${video.height / 90} "}}]"#);
+        let eff = resolve_effective_profile(&base_profile(), &r, &ctx).unwrap();
+        assert_eq!(eff.video.quality.value, QualityValue::Num(24));
     }
 
     #[test]

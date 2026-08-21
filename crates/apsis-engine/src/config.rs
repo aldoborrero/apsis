@@ -520,15 +520,15 @@ pub struct Profile {
 pub struct ProfileRule {
     /// CEL predicate over the context in `contracts/cel-context.md`.
     pub when: String,
-    /// Dotted-field → value. Applied last-write-wins. A value is a literal (int/bool,
-    /// a nested table, or a string on a string/enum-typed field) or a CEL expression
-    /// (a string on a non-string field, evaluated against the context).
+    /// Dotted-field → value. Applied last-write-wins. A value is a CEL expression iff it
+    /// is a string wrapped in `${…}` (evaluated against the context); every other value
+    /// (int, bool, table, or a bare string) is a literal. See `overrides.rs`.
     pub set: std::collections::BTreeMap<String, SetValue>,
 }
 
 /// A rule's `set` value, kept as the raw parsed value. The literal-vs-CEL decision is
-/// type-directed and made by the resolver (`overrides.rs`) against the target field,
-/// not at load — so no information is lost here.
+/// made by the resolver (`overrides.rs`) from the `${…}` marker — a string wrapped in
+/// `${…}` is CEL, everything else is a literal — so no information is lost here.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct SetValue(pub serde_json::Value);

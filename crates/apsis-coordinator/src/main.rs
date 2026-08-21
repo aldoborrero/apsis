@@ -120,6 +120,11 @@ async fn reconcile_all(reconciler: &Coordinator, cfg: &SchedulerConfig) {
                 .await
             {
                 Ok(ReconcileOutcome::Enqueued) => enqueued += 1,
+                // A bad profile rule drops a file (marked Failed@ver). Emit a metric —
+                // not just a log — so VMAlert can fire on it (Constitution Principle IV).
+                Ok(ReconcileOutcome::OverrideFailed) => {
+                    metrics::counter!("apsis_override_failed_total").increment(1);
+                }
                 Ok(_) => {}
                 Err(e) => tracing::warn!(file, error = %e, "reconcile failed"),
             }
