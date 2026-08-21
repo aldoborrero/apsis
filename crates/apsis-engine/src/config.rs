@@ -498,14 +498,40 @@ fn d_mkv() -> String {
     "mkv".to_string()
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+// No `Eq`: `rules` carries `SetValue`s wrapping `serde_json::Value` (which holds f64).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Profile {
     pub video: VideoConfig,
     pub audio: AudioConfig,
     pub subtitles: SubtitleConfig,
     pub output: OutputConfig,
+    /// Conditional overrides (US2). TOML `[[profiles.<name>.rule]]` → this list.
+    #[serde(default, rename = "rule")]
+    pub rules: Vec<ProfileRule>,
 }
+
+/// One conditional override: when `when` (a CEL predicate over the file's context)
+/// holds, layer `set` over the base profile. Resolved into an effective profile by
+/// `overrides::resolve_effective_profile` before the single `plan()` — the worker
+/// never sees rules (Constitution III).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProfileRule {
+    /// CEL predicate over the context in `contracts/cel-context.md`.
+    pub when: String,
+    /// Dotted-field → value. Applied last-write-wins. A value is a literal (int/bool,
+    /// a nested table, or a string on a string/enum-typed field) or a CEL expression
+    /// (a string on a non-string field, evaluated against the context).
+    pub set: std::collections::BTreeMap<String, SetValue>,
+}
+
+/// A rule's `set` value, kept as the raw parsed value. The literal-vs-CEL decision is
+/// type-directed and made by the resolver (`overrides.rs`) against the target field,
+/// not at load — so no information is lost here.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct SetValue(pub serde_json::Value);
 
 /// VAAPI hardware settings (port of `_engine/config.py`'s `VaapiConfig`). This is
 /// worker/host-level config the engine's command builder consumes.
@@ -706,5 +732,49 @@ mod tests {
         assert_eq!(p.audio.default_language, "eng");
         assert_eq!(p.output.container, "mkv");
         assert!(p.output.replace_original);
+    }
+
+    #[test]
+    fn parses_rules_and_defaults_to_none() {
+        // No rules → back-compat: existing profiles load unchanged.
+        let base = r#"{"video":{"codec":"hevc"},"audio":{},"subtitles":{},"output":{}}"#;
+        assert!(
+            serde_json::from_str::<Profile>(base)
+                .unwrap()
+                .rules
+                .is_empty(),
+            "absent rules default to empty"
+        );
+
+        // A profile with two rules: `when` + a `set` mixing a literal (string on a
+        // string field) and a computed value (string on a numeric field) and a table.
+        let with_rules = r#"{
+            "video":{"codec":"hevc"},"audio":{},"subtitles":{},"output":{},
+            "rule":[
+                {"when":"video.height >= 2160",
+                 "set":{"video.codec":"av1","video.quality.value":"video.height >= 2160 ? 24 : 22"}},
+                {"when":"audio.exists(a, a.codec == 'truehd')",
+                 "set":{"audio.transcode":{"codec":"eac3","bitrate":"640k"}}}
+            ]
+        }"#;
+        let p: Profile = serde_json::from_str(with_rules).unwrap();
+        assert_eq!(p.rules.len(), 2);
+        assert_eq!(p.rules[0].when, "video.height >= 2160");
+        // Raw values are retained verbatim; interpretation is the resolver's job.
+        assert_eq!(p.rules[0].set["video.codec"].0, serde_json::json!("av1"));
+        assert!(p.rules[1].set["audio.transcode"].0.is_object());
+    }
+
+    #[test]
+    fn cel_dependency_compiles_and_evaluates() {
+        // Smoke test the `cel` crate is wired: compile a predicate + a computed
+        // value against a context, proving the US2 evaluation path is available.
+        use cel::{Context, Program};
+        let mut ctx = Context::default();
+        ctx.add_variable("height", 2160i64).unwrap();
+        let pred = Program::compile("height >= 2160").unwrap();
+        assert_eq!(pred.execute(&ctx).unwrap(), true.into());
+        let computed = Program::compile("height >= 2160 ? 24 : 22").unwrap();
+        assert_eq!(computed.execute(&ctx).unwrap(), 24i64.into());
     }
 }

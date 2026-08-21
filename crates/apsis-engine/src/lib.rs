@@ -54,8 +54,8 @@ pub use audio::{AudioAction, AudioActionKind, build_audio_plan};
 pub use command::{Backend, BuildOptions, CpuBackend, VaapiBackend, build_command};
 pub use config::{
     AudioConfig, AudioTranscode, Bitrate, Crop, Encoder, Fallback, HardwareConfig, HdrPolicy,
-    MonoConfig, OutputConfig, Profile, QualityKind, QualityMode, QualityValue, StereoConfig,
-    SubtitleConfig, VaapiConfig, VideoCodec, VideoConfig,
+    MonoConfig, OutputConfig, Profile, ProfileRule, QualityKind, QualityMode, QualityValue,
+    SetValue, StereoConfig, SubtitleConfig, VaapiConfig, VideoCodec, VideoConfig,
 };
 pub use error::EngineError;
 pub use ffmpeg::FfmpegCommand;
