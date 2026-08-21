@@ -275,7 +275,7 @@ fn container_holds_subtitle(container: &str, codec: &str) -> bool {
 
 /// Parse a resolution string to its target height: `"1080p"`/`"720i"` → 1080/720,
 /// `"1920x1080"` → 1080, `"4k"`/`"8k"` → 2160/4320. `None` if unrecognized.
-fn parse_resolution_height(s: &str) -> Option<u32> {
+pub(crate) fn parse_resolution_height(s: &str) -> Option<u32> {
     let s = s.trim();
     if let Some(rest) = s.strip_suffix(['p', 'i']) {
         return rest.parse().ok();

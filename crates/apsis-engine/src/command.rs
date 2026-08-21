@@ -4,7 +4,7 @@
 use crate::config::{Encoder, HardwareConfig, Profile, VideoCodec};
 use crate::error::EngineError;
 use crate::ffmpeg::FfmpegCommand;
-use crate::plan::{FilePlan, TrackAction, VideoAction};
+use crate::plan::{FilePlan, TrackAction, VideoAction, parse_resolution_height};
 use crate::probe::StreamInfo;
 
 /// Backend selection + paths for building the command.
@@ -103,6 +103,24 @@ pub fn build_command(
         cmd.set_codec(v_idx, cpu_encoder(profile.video.codec), &copts);
     }
     cmd.set_metadata(v_idx, "title", "");
+
+    // max_resolution: downscale only, and only when the video is being encoded
+    // (a `-vf` with `-c:v copy` is rejected by ffmpeg). Backend-specific filter —
+    // `scale_vaapi` runs on the uploaded VAAPI surface, `scale` on CPU frames.
+    // `-1`/`-2` keeps the source aspect (CPU rounds width to even for the encoder).
+    if plan.video.action != VideoAction::Copy
+        && let Some(max) = profile.video.max_resolution.as_deref()
+        && let Some(target_h) = parse_resolution_height(max)
+        && let Some(src) = &plan.source_probe.video
+        && src.height > target_h
+    {
+        let filter = if use_vaapi {
+            format!("scale_vaapi=w=-1:h={target_h}")
+        } else {
+            format!("scale=-2:{target_h}")
+        };
+        cmd.add_video_filter(&filter);
+    }
 
     // --- Audio ---
     for item in &plan.audio {
@@ -485,5 +503,51 @@ mod tests {
         assert!(joined.contains("-b:a:1 128k"), "{joined}");
         // The original surround track a:0 stays a copy.
         assert!(joined.contains("-c:a:0 copy"), "{joined}");
+    }
+
+    #[test]
+    fn max_resolution_downscales_only_when_larger() {
+        let prof: Profile = serde_json::from_str(
+            r#"{"video":{"codec":"hevc","skip_codecs":[],"max_resolution":"1080p"},
+                "audio":{},"subtitles":{},"output":{"container":"mkv"}}"#,
+        )
+        .unwrap();
+        let uhd = StreamInfo {
+            index: 0,
+            codec_type: "video".into(),
+            codec: "h264".into(),
+            height: 2160,
+            ..Default::default()
+        };
+
+        // VAAPI SW-decode: the scale runs on the uploaded surface, so it must come
+        // AFTER the hwupload filter inside the single `-vf`.
+        let probe = Probe {
+            video: Some(uhd.clone()),
+            ..Default::default()
+        };
+        let plan = plan("in.mkv", &probe, &prof);
+        let joined = vaapi().build(&plan, &prof).unwrap().build().join(" ");
+        assert!(
+            joined.contains("-vf format=nv12,hwupload_vaapi,scale_vaapi=w=-1:h=1080"),
+            "{joined}"
+        );
+
+        // CPU path: plain `scale`, even width.
+        let cpu = CpuBackend {
+            ffmpeg_path: "ffmpeg".into(),
+        };
+        let joined = cpu.build(&plan, &prof).unwrap().build().join(" ");
+        assert!(joined.contains("-vf scale=-2:1080"), "{joined}");
+
+        // Source already ≤ target height → no scale filter at all.
+        let sd = StreamInfo { height: 720, ..uhd };
+        let probe_sd = Probe {
+            video: Some(sd),
+            ..Default::default()
+        };
+        let plan_sd = crate::plan::plan("in.mkv", &probe_sd, &prof);
+        let joined = vaapi().build(&plan_sd, &prof).unwrap().build().join(" ");
+        assert!(!joined.contains("scale_vaapi"), "no downscale: {joined}");
     }
 }

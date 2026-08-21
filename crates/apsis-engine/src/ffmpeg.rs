@@ -19,6 +19,7 @@ pub struct FfmpegCommand {
     codecs: BTreeMap<usize, (String, Vec<(String, String)>)>,
     metadata: Vec<(usize, String, String)>,
     dispositions: BTreeMap<usize, String>,
+    video_filters: Vec<String>,
     extra_output_args: Vec<String>,
     global_opts: Vec<String>,
     vaapi_device: Option<String>,
@@ -38,6 +39,7 @@ impl Default for FfmpegCommand {
             codecs: BTreeMap::new(),
             metadata: Vec::new(),
             dispositions: BTreeMap::new(),
+            video_filters: Vec::new(),
             extra_output_args: Vec::new(),
             global_opts: vec!["-y".to_string(), "-nostdin".to_string()],
             vaapi_device: None,
@@ -134,6 +136,12 @@ impl FfmpegCommand {
         self.extra_output_args.extend(args.iter().cloned());
     }
 
+    /// Append a video filter to the `-vf` chain, *after* any VAAPI upload filter (so
+    /// a `scale_vaapi` runs on the uploaded surface). Composed into the single `-vf`.
+    pub fn add_video_filter(&mut self, filter: &str) {
+        self.video_filters.push(filter.to_string());
+    }
+
     fn use_hw_decode(&self) -> bool {
         match &self.input_codec {
             Some(c) => self.vaapi_hw_decode_codecs.iter().any(|x| x == c),
@@ -181,9 +189,17 @@ impl FfmpegCommand {
             args.push(spec.clone());
         }
 
+        // Compose the single `-vf` chain: the VAAPI upload (SW-decode path only)
+        // comes first so any added filter (e.g. `scale_vaapi`) runs on the uploaded
+        // surface; CPU/HW-decode paths carry only the added filters.
+        let mut vf: Vec<String> = Vec::new();
         if self.vaapi_device.is_some() && !self.use_hw_decode() {
+            vf.push(self.vaapi_upload_filter.clone());
+        }
+        vf.extend(self.video_filters.iter().cloned());
+        if !vf.is_empty() {
             args.push("-vf".to_string());
-            args.push(self.vaapi_upload_filter.clone());
+            args.push(vf.join(","));
         }
 
         for (idx, (codec, opts)) in &self.codecs {
