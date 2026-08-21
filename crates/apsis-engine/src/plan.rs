@@ -257,6 +257,22 @@ fn select_default_subtitle_pos(subs: &[StreamInfo], default_language: &str) -> O
     Some(0)
 }
 
+/// Whether `container` can hold a subtitle of `codec`. MP4 only holds text subs
+/// (`mov_text`); MKV/others hold text + image subs. Used by `output.conform` to drop
+/// subs a target container can't mux (avoids a launch-time failure). Audio conform
+/// (which would need re-encoding an incompatible codec) is deferred.
+fn container_holds_subtitle(container: &str, codec: &str) -> bool {
+    match container
+        .trim()
+        .trim_start_matches('.')
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "mp4" | "m4v" | "mov" => matches!(codec, "mov_text" | "tx3g"),
+        _ => true,
+    }
+}
+
 /// Parse a resolution string to its target height: `"1080p"`/`"720i"` → 1080/720,
 /// `"1920x1080"` → 1080, `"4k"`/`"8k"` → 2160/4320. `None` if unrecognized.
 fn parse_resolution_height(s: &str) -> Option<u32> {
@@ -488,6 +504,15 @@ pub fn plan(input_path: &str, probe: &Probe, profile: &Profile) -> FilePlan {
         }
     }
 
+    // Conform (spec 004): drop subtitle tracks the target container can't hold.
+    if profile.output.conform {
+        subtitle_items.retain(|s| {
+            s.target_codec
+                .as_deref()
+                .is_none_or(|c| container_holds_subtitle(&profile.output.container, c))
+        });
+    }
+
     let compliant = reasons.is_empty();
     // Skip gates (spec 004): a source already *below* a resolution/bitrate threshold
     // is left alone even if its codec would otherwise be transcoded. Only fires on a
@@ -621,6 +646,30 @@ mod tests {
             )
             .should_skip
         );
+    }
+
+    #[test]
+    fn conform_drops_container_incompatible_subtitles() {
+        let pgs = StreamInfo {
+            index: 1,
+            codec_type: "subtitle".into(),
+            codec: "hdmv_pgs_subtitle".into(),
+            language: "eng".into(),
+            ..Default::default()
+        };
+        let probe = Probe {
+            video: Some(video("hevc", "")),
+            subtitles: vec![pgs],
+            ..Default::default()
+        };
+        let out = |c: &str| {
+            profile(&format!(
+                r#"{{"video":{{"codec":"hevc","skip_codecs":["hevc"]}},"audio":{{}},"subtitles":{{}},"output":{{"container":"{c}","conform":true}}}}"#
+            ))
+        };
+        // mp4 can't mux PGS → conform drops it; mkv holds it → kept.
+        assert!(plan("x.mkv", &probe, &out("mp4")).subtitles.is_empty());
+        assert_eq!(plan("x.mkv", &probe, &out("mkv")).subtitles.len(), 1);
     }
 
     #[test]
