@@ -116,21 +116,24 @@ applied only to the match; effective = base + overrides (ordered, last-write-win
 
 ### Tests for US2
 
-- [ ] T013 [P] [US2] `overrides.rs` tests: ordered layering + last-write-wins; `when` match/no-match
-  (height/hdr/`audio.exists(truehd)`); computed `set` value (`"... ? 24 : 22"`); coordinator
-  integration (effective profile reaches `plan()`).
+- [x] T013 [P] [US2] Tests written alongside impl (not TDD-order): `overrides.rs` (6) — matching
+  layers/last-write-wins/literal-not-CEL/unknown-path-rejected/bad-predicate; `config.rs` rule
+  parse + `cel` smoke; coordinator integration (`rule_override_reaches_enqueued_job`).
 
 ### Implementation for US2
 
-- [ ] T014 [US2] `config.rs`: `ProfileRule { when: String, set: BTreeMap<String, SetValue> }` and
-  `Profile.rules: Vec<ProfileRule>`; `SetValue` = literal-or-CEL-string.
-- [ ] T015 [US2] NEW `crates/apsis-engine/src/overrides.rs`: build the CEL context from `Probe`
-  (per contracts/cel-context.md, `cel_context_version: 1`); compile each `when`/`set` `Program`;
-  `resolve_effective_profile(base, rules, ctx) -> Profile` — ordered layering, dotted-path `set`
-  application, computed-value evaluation. Pure, unit-testable without NATS. (research R6/R7)
-- [ ] T016 [US2] `crates/apsis-coordinator/src/reconcile.rs`: call `resolve_effective_profile`
-  before `plan()`; run skip-evaluation on the **effective** profile (a rule may set a value a gate
-  reads). Workers unchanged (they never see rules — Constitution III).
+- [x] T014 [US2] `config.rs`: `ProfileRule { when, set: BTreeMap<String, SetValue> }` +
+  `Profile.rules` (TOML `rule`, default empty → back-compat). `SetValue(serde_json::Value)` keeps
+  the raw value; literal-vs-CEL is decided by the resolver. Added `cel` 0.14 (renamed from the
+  spec's `cel-interpreter`). Profile/Job drop `Eq`.
+- [x] T015 [US2] NEW `crates/apsis-engine/src/overrides.rs`: `build_context` (cel_context_version 1)
+  + `resolve_effective_profile` via JSON round-trip (dotted-path `set`, last-write-wins, re-validate
+  on deserialize). Type-directed literal-vs-CEL (string on string field = literal, else CEL);
+  computing a string field via CEL is NOT expressible (documented). cel→JSON via the `json` feature.
+- [x] T016 [US2] `crates/apsis-coordinator/src/reconcile.rs`: resolve the effective profile between
+  probe and `plan()`; effective profile feeds skip-gates AND `Job.profile_config` (worker never
+  sees rules). No rules → fast path. **`duration` context field is 0.0** until the probe carries it
+  (contract: 0.0 = unknown) — small follow-up in probe.rs.
 
 **Checkpoint**: US1 + US2 both work independently.
 
