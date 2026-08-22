@@ -86,3 +86,20 @@ Every `when`/`set` CEL string is **compiled** and **canary-evaluated** against a
 context where every field above is present with a typed sample value, at config load (fail-fast).
 Unknown fields, syntax errors, and obvious type mismatches stop startup. (See research R2 — this
 is the pragmatic stand-in for cel-go static checking, which cel-rust lacks.)
+
+**The canary is one representative file**: a 1080p H.264 stream (`width` 1920, `height` 1080,
+`bitrate` 8 000 000, `bit_depth` 8, `color_transfer` `bt709`, not HDR), **one** 6-channel `eac3`
+`eng` audio track, **one** `subrip` `eng` subtitle, `container` `mkv`, `duration` 1800, `size`
+4 000 000 000. Two consequences to author rules around:
+
+- **A computed `set` value is range-checked against these constants.** A rule whose value goes
+  out of range for this representative file is rejected at load — e.g. `${video.bitrate / 100000}`
+  → 80, over the 0–51 `quality.value` range. Scale your divisor to the real bitrate range (a
+  value in range for the canary passes load; one that only overflows for *some* real file fails
+  that file at reconcile, per FR-015). This is deliberate: a rule broken for an 8 Mbps 1080p file
+  is broken for most content.
+- **The canary has exactly one audio and one subtitle track.** Prefer the comprehension macros
+  (`audio.exists(a, …)`, `audio.filter(a, …)`, `size(audio)`) over positional indexing. An
+  **unguarded** `audio[1]` errors on the single-track canary and is rejected at load (and would
+  error on any real single-audio file too); **guard** it — `size(audio) > 1 && audio[1].channels
+  > 2` — and CEL's error-absorbing `&&` makes it validate cleanly and stay safe at runtime.
