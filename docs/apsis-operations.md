@@ -79,8 +79,98 @@ kind = "cpu"
 ```
 
 Config is **fail-fast**: an invalid or typo'd config (unknown profile, relative library path,
-`NaN` ratio, unknown key inside a profile) makes the daemon refuse to start, so the last-good
-deployment keeps running.
+`NaN` ratio, unknown key inside a profile, or a broken CEL rule) makes the daemon refuse to
+start, so the last-good deployment keeps running.
+
+## Profiles
+
+A profile has four blocks — `video`, `audio`, `subtitles`, `output`. Every field is optional
+with a sane default; unknown keys are rejected. Full example with the common fields:
+
+```toml
+[profiles.tv.video]
+codec       = "hevc"            # hevc | av1  (target codec)
+encoder     = "vaapi"           # vaapi | cpu  (which backend materializes it)
+quality     = 22                # shorthand for { mode = "auto", value = 22 }
+# quality   = { mode = "crf", value = 20 }   # or qp | crf | bitrate (value "5M" for bitrate)
+fallback    = "cpu"             # cpu | none  (fallback if the primary backend fails)
+skip_codecs = ["hevc", "av1"]   # a file already in one of these is compliant (copy-through)
+hdr_policy  = "copy"            # copy | tonemap | encode
+preset      = "medium"          # CPU-encoder only (libx265/libsvtav1); ignored on VAAPI
+max_resolution = "1080p"        # downscale-if-larger ("1080p" | "1920x1080" | "4k")
+custom_args    = []             # raw ffmpeg args appended to the single command (escape hatch)
+skip_if_resolution_below = "480p"   # compliance gate: leave already-small sources alone
+skip_if_bitrate_below    = "1500k"  # compliance gate: leave already-efficient sources alone
+
+[profiles.tv.audio]
+keep_languages    = ["eng", "spa", "jpn"]   # empty = keep all; never drops ALL audio
+priority          = ["eng", "spa"]          # output ordering
+remove_commentary = true
+preserve_surround = true
+add_stereo   = { codec = "aac", bitrate = "128k", channels = 2, languages = ["eng"] }
+add_mono     = { codec = "aac", bitrate = "64k", languages = ["eng"] }   # generate a mono clone
+transcode    = { codec = "opus", bitrate = "160k" }   # re-encode KEPT tracks (not just clones)
+max_channels = 6                            # cap channels on transcoded/generated tracks
+normalize    = false                        # single-pass EBU R128 loudnorm on ENCODED tracks only
+
+[profiles.tv.subtitles]
+keep_languages = ["eng", "spa", "jpn"]
+remove_formats = ["hdmv_pgs_subtitle", "dvd_subtitle"]
+order          = ["eng", "spa"]             # positional output order
+forced_only    = false
+
+[profiles.tv.output]
+container        = "mkv"
+replace_original = true
+conform          = true         # drop SUBTITLE streams the container can't hold (avoids mux failures)
+strip_metadata   = false        # -map_metadata -1
+keep_chapters    = true
+```
+
+**`quality` modes** — `auto` resolves to the backend's native rate control (VAAPI `qp` / CPU
+`crf`); `qp` and `crf` force those; `bitrate` takes a rate value (`"5M"`). `vmaf` is accepted by
+the schema but not yet materializable.
+
+**Not yet materialized** (accepted by the schema, applied in a later spec): `video.crop`
+(auto-crop needs a `cropdetect` analysis pass — conflicts with single-pass encoding),
+`subtitles.extract` (sidecar `.srt` output), and `quality.mode = "vmaf"`. Setting them loads
+fine but has no effect yet.
+
+## Conditional overrides (CEL rules)
+
+A profile can carry rules that override the base per file. Each rule has a `when` predicate and
+a `set` map, evaluated against the probed file. Rules apply in order, last-write-wins, before
+the single plan is computed — the worker only ever sees the resolved *effective* profile.
+
+```toml
+[[profiles.tv.rule]]
+when = "video.height >= 2160"
+set  = { "video.codec" = "av1", "video.quality.value" = "${video.height >= 2160 ? 24 : 22}" }
+
+[[profiles.tv.rule]]
+when = "audio.exists(a, a.codec == 'truehd' && a.channels > 6)"
+set  = { "audio.transcode" = { codec = "eac3", bitrate = "640k" } }
+```
+
+- **`when`** is a [CEL](https://cel.dev) predicate (boolean). **`set`** keys are dotted profile
+  paths; values are **literals by default**, or CEL expressions when wrapped in `${…}`. So
+  `"video.codec" = "av1"` is a literal but `"video.quality.value" = "${… ? 24 : 22}"` is
+  computed. `${…}` is reserved — a literal value that must contain `${x}` is not expressible.
+- **Context** (`cel_context_version: 1`): `video?` (`codec, width, height, bitrate, hdr,
+  color_transfer, bit_depth`), `audio[]`/`subtitles[]` (`codec, language, channels, …`), and
+  `path, container, duration, size`. The full field table + macro surface is in
+  [`specs/004-rich-profiles-cel/contracts/cel-context.md`](../specs/004-rich-profiles-cel/contracts/cel-context.md).
+  Prefer the comprehension macros (`audio.exists(a, …)`, `size(audio)`) over positional
+  indexing; guard any index with a size check.
+- **Validation is fail-fast at load**: every `when`/`${…}` is compiled and canary-evaluated
+  against a representative synthetic file, so a syntax error, unknown context field, unknown
+  `set` path, or a *statically* out-of-range value refuses to start. A value that only goes out
+  of range for a specific real file fails *that file* at reconcile (recorded `Failed@version`,
+  counter `apsis_override_failed_total`), never the daemon — and, like any `Failed` file, is not
+  retried until its `mtime:size` changes.
+
+> `duration` is currently always `0.0` (the probe reads streams, not container format) — do not
+> gate rules on it yet.
 
 ## Environment variables
 
