@@ -34,6 +34,37 @@ type Coordinator = Reconciler<KvStateStore, NatsPublisher, FfprobeProber>;
 
 #[tokio::main]
 async fn main() -> ExitCode {
+    // `--check-config [path]`: load + fully validate the scheduler config (schema,
+    // libraries, AND every CEL profile rule) and exit — no NATS, no ffprobe. This is
+    // the fail-fast pre-deploy check (quickstart.md); the path defaults to
+    // APSIS_SCHEDULER_CONFIG / scheduler.toml.
+    let mut args = std::env::args().skip(1);
+    if let Some(flag) = args.next() {
+        if flag != "--check-config" {
+            eprintln!(
+                "apsis-coordinator: unknown argument {flag:?} (only `--check-config [path]`)"
+            );
+            return ExitCode::FAILURE;
+        }
+        let path = args.next().unwrap_or_else(|| {
+            std::env::var("APSIS_SCHEDULER_CONFIG").unwrap_or_else(|_| "scheduler.toml".to_string())
+        });
+        return match load_scheduler(Path::new(&path)) {
+            Ok(cfg) => {
+                println!(
+                    "apsis-coordinator: {path}: OK ({} libraries, {} profiles)",
+                    cfg.libraries.len(),
+                    cfg.profiles.len()
+                );
+                ExitCode::SUCCESS
+            }
+            Err(e) => {
+                eprintln!("apsis-coordinator: {path}: {e}");
+                ExitCode::FAILURE
+            }
+        };
+    }
+
     match serve().await {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
