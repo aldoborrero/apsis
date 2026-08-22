@@ -1,178 +1,199 @@
-# pyflows
+# apsis
 
-Media library transcoder with VAAPI hardware encoding. Automatically scans, analyzes, and re-encodes your media library to a consistent format with configurable profiles.
+**A thin, distributed media-transcode scheduler in Rust.** A central coordinator
+walks your media libraries and decides *whether* and *how* to transcode; a pool of
+workers pull those decisions and do the work — verify, then atomically replace the
+original. Jobs carry only metadata; the media stays on shared storage.
+
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](#license)
+![Rust](https://img.shields.io/badge/rust-edition%202024-orange.svg)
+![status](https://img.shields.io/badge/status-single--node%20working-yellow.svg)
+
+apsis is a FOSS successor to [Unmanic](https://github.com/Unmanic/unmanic) for the
+homelab. The transcode *brain* (probe → plan → ffmpeg command, tuned for AMD VAAPI)
+was already ours; apsis is the orchestration around it — the part Unmanic provided —
+rebuilt to be **git-recoverable**, **observable through metrics instead of a web UI**,
+and **distributable across GPU hosts**. The name is orbital: an *apsis* is a key point
+of an orbit, mirroring the central-coordinator / orbiting-workers topology.
+
+> **Why build it?** The "modern Unmanic" alternatives are not open: Tdarr is
+> proprietary, and FileFlows' application source is unpublished. Unmanic (GPLv3) is
+> the only truly-FOSS orchestrator in this space — so the only MIT-licensed upgrade
+> path is to own it.
+
+---
+
+## How it works
+
+```
+   libraries + profiles        ┌──────────────────────────────────┐
+   (scheduler.toml, in git) ──▶ │          apsis-coordinator        │
+                                │   scan → probe → plan → enqueue   │
+                                │          (reconcile loop)         │
+                                └─────────────────┬────────────────┘
+                                                  │  jobs (metadata only)
+                                        ┌─────────▼─────────┐
+                                        │    NATS JetStream  │  job stream + KV state
+                                        └─────────┬─────────┘
+                                                  │  pull · claim · ack
+                                ┌─────────────────▼────────────────┐
+   shared filesystem  ◀────────▶│           apsis-worker            │
+   (media over NFS)             │  claim → transcode → verify →     │
+                                │         atomic-replace            │
+                                │    VAAPI (AMD)  →  CPU fallback    │
+                                └───────────────────────────────────┘
+```
+
+- **The coordinator reconciles.** It walks each library, gates on a cheap
+  `mtime:size` change token (unchanged files are never re-probed), probes what
+  changed, and asks the engine for a plan. A file that already complies is marked
+  `Done`; drift is claimed and published as a job. Desired state is git-tracked TOML —
+  losing NATS costs at most one re-probe pass, never a re-transcode.
+- **The worker executes, safely.** It claims a job under a JetStream lease, builds the
+  ffmpeg command for *its* backend, transcodes to a temp file, **verifies** the output
+  (duration within tolerance, not bloated), and only then **atomically replaces** the
+  original. A crash mid-encode redelivers the job; a persistently failing job
+  dead-letters as `Failed@version` and alerts — it never loops forever.
+- **Media never moves.** Jobs are metadata; workers read and write the shared
+  filesystem directly (a per-worker `path_map` maps coordinator paths to local mounts).
 
 ## Features
 
-- **VAAPI hardware encoding** — uses GPU acceleration for fast HEVC/H.265 transcoding with CPU fallback
-- **Profile-based processing** — define separate profiles for TV, movies, anime, etc. with per-profile video, audio, and subtitle rules
-- **Smart analysis** — checks codec, bitrate, audio tracks, and subtitles before deciding what to transcode
-- **Audio normalization** — keeps preferred languages, removes commentary, adds stereo downmix tracks
-- **Subtitle cleanup** — removes image-based formats (PGS, DVD), keeps text subs in configured languages
-- **Webhook integration** — receives Sonarr/Radarr import notifications and processes new files automatically
-- **Stall detection** — monitors FFmpeg progress in real-time, fails only when encoding actually stalls (no fixed timeouts)
-- **SQLite tracking** — records encode history, avoids reprocessing, tracks failures
-- **Notifications** — ntfy push notifications and Jellyfin library refresh on completion
+- **Hardware + CPU encoding** — AMD **VAAPI** HEVC/AV1 with automatic **libx265 /
+  libsvtav1** fallback, including the AMD 780M `sei=hdr` workaround for the VCN
+  `a53_cc` bug.
+- **Declarative profiles** — per-library video/audio/subtitle/output rules: codec
+  targets, quality modes (`qp` / `crf` / `bitrate`), audio language keep-lists,
+  commentary removal, stereo/mono downmix generation, subtitle filtering, container
+  conform. Never drops *all* audio.
+- **Conditional overrides with CEL** — bring your own policy without forking Rust.
+  A profile can carry rules whose [CEL](https://cel.dev) predicate matches on the
+  probed file and whose `set` layers overrides onto the base profile — computed values
+  wrapped in `${…}`:
 
-## Installation
+  ```toml
+  [[profiles.tv.rule]]
+  when = "video.height >= 2160"
+  set  = { "video.codec" = "av1", "video.quality.value" = "${video.height >= 2160 ? 24 : 22}" }
 
-### Nix (recommended)
+  [[profiles.tv.rule]]
+  when = "audio.exists(a, a.codec == 'truehd' && a.channels > 6)"
+  set  = { "audio.transcode" = { codec = "eac3", bitrate = "640k" } }
+  ```
 
-```bash
-# Run directly
-nix run github:aldoborrero/pyflows -- --help
+  Every rule is **compiled and canary-evaluated at config load** — a syntax error,
+  unknown field, or static out-of-range value refuses to start. A value that only goes
+  out of range for a specific real file fails *that file*, never the daemon.
+- **Fail-fast, git-recoverable config** — libraries and profiles are TOML in git; an
+  invalid config refuses to start so the last-good deployment keeps running. No
+  live-only state to lose.
+- **Observability, not a web UI** — both daemons export Prometheus metrics and
+  structured `tracing` logs; dashboards and alerting live in Grafana + VictoriaMetrics.
 
-# Or add as a flake input
-{
-  inputs.pyflows.url = "github:aldoborrero/pyflows";
-}
-```
+## Quickstart (local, single node)
 
-### NixOS module
-
-```nix
-{
-  imports = [ inputs.pyflows.nixosModules.pyflows ];
-
-  services.pyflows = {
-    enable = true;
-    settings = {
-      general = {
-        mode = "daemon";
-        vaapi_device = "/dev/dri/renderD128";
-        workers = 1;
-      };
-      profiles.tv = {
-        video = {
-          codec = "hevc";
-          encoder = "vaapi";
-          quality = 22;
-        };
-        audio = {
-          keep_languages = [ "eng" "spa" ];
-          remove_commentary = true;
-        };
-      };
-      libraries = [{
-        path = "/mnt/media/tv";
-        profile = "tv";
-      }];
-    };
-  };
-}
-```
-
-### Development
+Everything is in the Nix dev shell — Rust toolchain, `ffmpeg`, `nats-server`,
+`process-compose`.
 
 ```bash
-git clone https://github.com/aldoborrero/pyflows
-cd pyflows
-direnv allow   # or: nix develop
+git clone https://github.com/aldoborrero/apsis && cd apsis
+direnv allow            # or: nix develop
+process-compose up      # local JetStream NATS on :4222 (monitoring :8222)
 ```
 
-## Usage
+Point the two daemons at a library and run them against the local NATS:
 
 ```bash
-# Run the daemon (scanner + webhook server)
-pyflows run --config config.yaml
-
-# Scan library and process pending files
-pyflows scan --config config.yaml
-
-# Check what would happen to a single file (dry run)
-pyflows check /path/to/video.mkv --profile tv --config config.yaml
-
-# Show the encoding plan for a file
-pyflows plan /path/to/video.mkv --profile tv --config config.yaml
-
-# Encode a single file
-pyflows encode /path/to/video.mkv --profile tv --config config.yaml
-
-# Show processing status
-pyflows status --config config.yaml
-
-# Show encode history
-pyflows history --config config.yaml
+export NATS_URL=nats://127.0.0.1:4222
+APSIS_SCHEDULER_CONFIG=./scheduler.toml cargo run -p apsis-coordinator
+APSIS_WORKER_CONFIG=./worker.toml       cargo run -p apsis-worker
 ```
 
-## Configuration
+### Configuration
 
-pyflows uses a YAML config file. Example:
+`scheduler.toml` (coordinator) — libraries, profiles, reconcile cadence:
 
-```yaml
-general:
-  mode: daemon          # "daemon" (watcher+scanner+webhook) or "webhook" (webhook only)
-  temp_dir: /tmp/pyflows
-  log_level: info
-  workers: 1
-  db_path: /var/lib/pyflows/pyflows.db
-  vaapi_device: /dev/dri/renderD128
-  settle_time: 60       # seconds to wait after file modification before processing
+```toml
+[reconcile]
+scan_interval = "5m"
+debounce      = "60s"        # ignore files still being written
 
-profiles:
-  tv:
-    video:
-      codec: hevc
-      bit_depth: 10
-      encoder: vaapi      # "vaapi" or "cpu"
-      quality: 22          # CRF value (lower = better quality, larger file)
-      fallback: cpu        # fall back to CPU if VAAPI fails
-      skip_codecs: [hevc]  # don't re-encode files already in these codecs
-    audio:
-      keep_languages: [eng, spa, jpn]
-      default_language: eng
-      priority: [eng, spa, jpn]
-      remove_commentary: true
-      add_stereo:
-        codec: aac
-        bitrate: 128
-        channels: 2
-        languages: [eng, spa, jpn]
-      preserve_surround: true
-    subtitles:
-      keep_languages: [eng, spa, jpn]
-      remove_formats: [pgs, dvd_subtitle, hdmv_pgs_subtitle]
-      remove_commentary: true
-    output:
-      container: mkv
-      replace_original: true
+[[library]]
+name    = "tv"
+path    = "/hdd/media/tv"    # must be absolute
+profile = "tv"
 
-libraries:
-  - path: /mnt/media/tv
-    profile: tv
-  - path: /mnt/media/anime
-    profile: anime
-
-notifications:
-  ntfy:
-    url: https://ntfy.example.com
-    topic: pyflows
-  jellyfin:
-    url: http://jellyfin:8096
-    api_key: ${JELLYFIN_API_KEY}    # environment variable expansion
+[profiles.tv.video]
+codec       = "hevc"
+skip_codecs = ["hevc", "av1"]   # already-compliant codecs
+quality     = 22                # shorthand for { mode = "auto", value = 22 }
+[profiles.tv.audio]
+keep_languages = ["eng", "spa", "jpn"]
+add_stereo     = { codec = "aac", bitrate = "128k", channels = 2, languages = ["eng"] }
+[profiles.tv.subtitles]
+keep_languages = ["eng", "spa", "jpn"]
+[profiles.tv.output]
+container        = "mkv"
+replace_original = true
 ```
 
-Environment variables can be referenced as `${VAR_NAME}` anywhere in the config.
+`worker.toml` (worker) — backends (first is primary), verify guards, path map:
 
-## Architecture
+```toml
+concurrency   = 1            # AMD VCN HEVC is single-session
+stall_timeout = "2m"
+
+[verify]
+max_size_ratio = 1.5         # reject a bloated output
+
+[[backend]]
+kind   = "vaapi"
+device = "/dev/dri/renderD128"
+[[backend]]
+kind = "cpu"                 # fallback
+
+[path_map]
+# "/hdd" = "/mnt/rhea-hdd"   # coordinator path → this host's mount
+```
+
+The full runbook — every field, env vars, metrics, and multi-host notes — is in
+[`docs/apsis-operations.md`](docs/apsis-operations.md).
+
+## Project layout
 
 ```
-pyflows
-├── scanner      — Walks library directories, finds files needing processing
-├── probe        — FFprobe wrapper, extracts stream metadata
-├── plan         — Analyzes streams, builds an encoding plan per profile rules
-├── pipeline     — Orchestrates the encode: temp file → ffmpeg → replace original
-├── ffmpeg       — Builds ffmpeg commands, monitors progress, detects stalls
-├── audio        — Audio stream selection, stereo downmix logic
-├── subtitles    — Subtitle filtering and cleanup
-├── db           — SQLite encode history and state tracking
-├── webhook      — HTTP server for Sonarr/Radarr import notifications
-├── notify       — ntfy push notifications, Jellyfin library refresh
-├── tasks        — Huey task queue for background processing
-├── config       — Pydantic models, YAML loader with env var expansion
-└── metrics      — Prometheus metrics endpoint
+crates/
+├── apsis-engine        the transcode brain: probe → plan → ffmpeg command,
+│                       declarative Profile + CEL overrides (pure, no I/O)
+├── apsis-common        shared: config loaders, NATS/JetStream, job + state schema
+├── apsis-coordinator   the reconcile loop: scan → probe → plan → enqueue
+└── apsis-worker        the executor: claim → transcode → verify → atomic-replace
+
+docs/
+├── design/rust-scheduler.md    architecture & settled decisions
+└── apsis-operations.md         operations runbook (config, metrics, env)
+specs/                          spec-kit feature specs (001-engine … 004-cel-profiles)
+.specify/memory/constitution.md the project's governing principles
+```
+
+## Status
+
+apsis runs **single-node** today: the engine (spec 001), the coordinator + worker
+reconcile-and-transcode loop with crash-safety (spec 002), and rich declarative
+profiles + CEL conditional overrides with load-time validation (spec 004) are
+implemented and tested. **Multi-host** distribution across GPU nodes (spec 003) is
+designed but not yet built, and production still runs on Unmanic + the legacy plugin
+until the cutover. See [`specs/`](specs/) for the per-feature detail.
+
+## Development
+
+```bash
+nix develop                                        # dev shell with all tooling
+cargo test --workspace                             # unit + integration tests
+cargo clippy --workspace --all-targets -- -D warnings
+nix fmt                                             # format everything
 ```
 
 ## License
 
-MIT
+MIT.
