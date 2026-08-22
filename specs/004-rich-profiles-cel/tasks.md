@@ -173,15 +173,18 @@ never the daemon; evaluation pure/terminating.
 
 ## Phase 6: Polish & cross-cutting
 
-- [ ] T020 [P] Docs: extend the `scheduler.toml` reference / `docs/apsis-operations.md` with the
-  new profile fields + CEL rule syntax + the `cel_context_version: 1` contract; note the constitution
-  v2.0.0 rationale.
-- [ ] T021 Ensure a `--check-config <scheduler.toml>` path exists (used by quickstart.md) that runs
-  full load-time validation without connecting to NATS; or document the existing check command.
-- [ ] T022 Gate: `nix develop --command bash -c 'cargo fmt && cargo clippy --workspace
-  --all-targets -- -D warnings && cargo test -p apsis-engine -p apsis-coordinator'`.
-- [ ] T023 [P] Run `quickstart.md` end-to-end against the built binaries (the two example profiles
-  + the CEL rules + the fail-fast checks).
+- [x] T020 [P] Docs: `docs/apsis-operations.md` gained a full Profile field reference (all
+  spec-004 additions, with deferred fields marked) + a Conditional overrides (CEL) section
+  documenting the `${…}` marker, the `cel_context_version: 1` context (linked to the contract),
+  and the fail-fast-at-load / per-file-Failed semantics. README rewritten for apsis.
+- [x] T021 `apsis-coordinator --check-config [path]`: loads + fully validates the scheduler
+  config incl. every CEL rule (via the load-time canary), exits 0/1, no NATS/ffprobe. Verified
+  against a good config and a bad-rule config.
+- [x] T022 Gate green throughout: `cargo fmt && cargo clippy --workspace --all-targets -D warnings
+  && cargo test --workspace` (9 suites).
+- [~] T023 [P] Fail-fast half of quickstart exercised end-to-end (`--check-config` on the CEL-rule
+  example + a broken rule). The live transcode e2e (profiles → NATS → worker → atomic-replace)
+  needs a real media library + running NATS, out of scope for a unit-test environment.
 
 ---
 
