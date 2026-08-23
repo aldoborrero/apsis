@@ -15,7 +15,7 @@ use std::process::ExitCode;
 
 use apsis_common::{KvStateStore, connect, ensure_topology, load_worker};
 
-use crate::worker::Worker;
+use crate::worker::{Worker, serve_cancel};
 
 type Fatal = Box<dyn std::error::Error + Send + Sync>;
 
@@ -47,7 +47,9 @@ async fn serve() -> Result<(), Fatal> {
     let (client, ctx) = connect(&nats_url).await?;
     let tuning = cfg.consumer.tuning(cfg.concurrency);
     let kv = ensure_topology(&ctx, &tuning).await?;
-    let worker = Worker::new(client, ctx, KvStateStore::new(kv), &cfg);
+    let worker = Worker::new(client.clone(), ctx, KvStateStore::new(kv), &cfg);
+    // Serve operator cancels (spec 005 US2) alongside the pull loop.
+    tokio::spawn(serve_cancel(client, worker.cancel_registry()));
     worker.run(&tuning).await
 }
 

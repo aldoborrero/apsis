@@ -115,6 +115,18 @@ impl KvStateStore {
             .map_err(|e| StoreError::Backend(e.into()))?;
         Ok(())
     }
+
+    /// Delete a key so the reconcile change-gate misses it and re-plans (spec 005:
+    /// the *defer* disposition + *re-queue*). Absent is not an error.
+    ///
+    /// # Errors
+    /// Backend failure.
+    pub async fn delete(&self, key: &str) -> Result<(), StoreError> {
+        self.0
+            .delete(key)
+            .await
+            .map_err(|e| StoreError::Backend(e.into()))
+    }
 }
 
 #[async_trait]

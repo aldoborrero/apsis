@@ -8,10 +8,13 @@
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
+use std::sync::{Arc, Mutex as StdMutex};
+
 use apsis_common::config::{BackendConfig, BackendKind, VerifyConfig, WorkerConfig};
+use apsis_common::control::Disposition;
 use apsis_common::{
     ConsumerTuning, Job, KvStateStore, Outcome, PathMap, StateEntry, StateStore, Status,
-    StoreError, TranscodeResult, bind_job_consumer, publish_result,
+    StoreError, TranscodeResult, bind_job_consumer, publish_result, set_ignore_marker,
 };
 use apsis_engine::{Backend, CpuBackend, VaapiBackend};
 use async_nats::jetstream::AckKind;
@@ -40,6 +43,16 @@ pub(crate) struct Worker {
     stall_timeout: std::time::Duration,
     /// This worker's id for per-worker pause targeting (`APSIS_WORKER_ID`, default `default`).
     id: String,
+    /// The job currently transcoding (if any), so the cancel subscriber can interrupt it.
+    running: Arc<StdMutex<Option<Running>>>,
+}
+
+/// The in-flight job the cancel subscriber targets (spec 005 US2).
+pub(crate) struct Running {
+    job_id: String,
+    cancel: Arc<tokio::sync::Notify>,
+    /// The subscriber sets the disposition before firing `cancel`; `process` reads it.
+    disposition: Arc<StdMutex<Option<Disposition>>>,
 }
 
 fn build_backend(bc: &BackendConfig, ffmpeg: &str) -> Box<dyn Backend> {
@@ -83,7 +96,13 @@ impl Worker {
             ffprobe: cfg.ffprobe.clone(),
             stall_timeout: cfg.stall_timeout,
             id: std::env::var("APSIS_WORKER_ID").unwrap_or_else(|_| "default".to_string()),
+            running: Arc::new(StdMutex::new(None)),
         }
+    }
+
+    /// A handle to the in-flight-job registry, for the cancel subscriber (spec 005 US2).
+    pub(crate) fn cancel_registry(&self) -> Arc<StdMutex<Option<Running>>> {
+        self.running.clone()
     }
 
     /// Whether this worker is currently paused (spec 005 US1). Reads the pause key each
@@ -201,10 +220,15 @@ impl Worker {
         plan.output.output_path.clone_from(&local_out);
         let in_bytes = std::fs::metadata(&local_in).map_or(0, |m| m.len());
 
-        // Cancellation (spec 005 US2): the transcode is interruptible via this Notify.
-        // T008 registers it so the control subscriber can fire it; until then it is
-        // never fired (behavior unchanged).
-        let cancel = std::sync::Arc::new(tokio::sync::Notify::new());
+        // Cancellation (spec 005 US2): register this job so the control subscriber can
+        // interrupt it, then run the (interruptible) transcode, then deregister.
+        let cancel = Arc::new(tokio::sync::Notify::new());
+        let disposition: Arc<StdMutex<Option<Disposition>>> = Arc::new(StdMutex::new(None));
+        *self.running.lock().expect("registry lock") = Some(Running {
+            job_id: job.id.to_string(),
+            cancel: cancel.clone(),
+            disposition: disposition.clone(),
+        });
         let t = transcode(
             self.primary.as_ref(),
             self.fallback.as_deref(),
@@ -213,7 +237,33 @@ impl Worker {
             self.stall_timeout,
             &cancel,
         )
-        .await?;
+        .await;
+        *self.running.lock().expect("registry lock") = None;
+        let t = t?;
+
+        // Operator cancel: apply the disposition (defer → clear KV so the next reconcile
+        // re-plans; ignore → recoverable on-disk marker) and drain the message. NOT a
+        // transcode failure — no result published, no `Failed@version` recorded.
+        if t.outcome.cancelled {
+            let _ = std::fs::remove_file(&t.outcome.temp);
+            let disp = disposition
+                .lock()
+                .expect("disposition lock")
+                .take()
+                .unwrap_or(Disposition::Defer);
+            match disp {
+                Disposition::Ignore => {
+                    let _ = set_ignore_marker(Path::new(&local_in));
+                    // Clear the entry too; the marker keeps the reconcile gate skipping it.
+                    let _ = self.kv.delete(key).await;
+                }
+                Disposition::Defer => {
+                    let _ = self.kv.delete(key).await;
+                }
+            }
+            info!(job_id = %job.id, ?disp, "transcode cancelled by operator");
+            return Ok(Outcome::Failed); // value ignored on the ack path; message drains
+        }
 
         // Which backend produced the surviving output (for the span / logs).
         let backend = if t.used_fallback {
@@ -463,6 +513,51 @@ impl Worker {
             decision: None,
         }
     }
+}
+
+/// Serve cancel requests (spec 005 US2): on a `CancelRequest` for the currently-running
+/// job, record the disposition and fire its cancel; reply with the outcome. A cancel for a
+/// job this worker isn't running replies `NotRunning`. A subscribe error is logged, not
+/// fatal — losing the control feed costs operator control, never correctness.
+pub(crate) async fn serve_cancel(
+    client: async_nats::Client,
+    registry: Arc<StdMutex<Option<Running>>>,
+) {
+    use apsis_common::control::{
+        CancelOutcome, CancelReply, CancelRequest, SUBJECT_CONTROL_CANCEL,
+    };
+    let mut sub = match client.subscribe(SUBJECT_CONTROL_CANCEL).await {
+        Ok(s) => s,
+        Err(e) => {
+            error!(error = %e, "could not subscribe to control.cancel");
+            return;
+        }
+    };
+    while let Some(msg) = sub.next().await {
+        let Some(reply_to) = msg.reply.clone() else {
+            continue; // request/reply only
+        };
+        let Ok(req) = serde_json::from_slice::<CancelRequest>(&msg.payload) else {
+            continue;
+        };
+        let outcome = {
+            let guard = registry.lock().expect("registry lock");
+            match guard.as_ref() {
+                Some(r) if r.job_id == req.job_id => {
+                    *r.disposition.lock().expect("disposition lock") = Some(req.disposition);
+                    r.cancel.notify_one();
+                    CancelOutcome::Cancelled
+                }
+                _ => CancelOutcome::NotRunning,
+            }
+        };
+        if let Ok(bytes) = serde_json::to_vec(&CancelReply { outcome }) {
+            let _ = client.publish(reply_to, bytes.into()).await;
+        }
+        metrics::counter!("apsis_control_ops_total", "op" => "cancel").increment(1);
+        info!(job_id = %req.job_id, ?outcome, "cancel request handled");
+    }
+    warn!("control.cancel subscription ended");
 }
 
 #[cfg(test)]
