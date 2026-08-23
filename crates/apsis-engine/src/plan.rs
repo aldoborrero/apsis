@@ -146,6 +146,32 @@ pub struct FilePlan {
     pub audio: Vec<AudioTrackPlan>,
     pub subtitles: Vec<SubtitleTrackPlan>,
     pub reasons: Vec<PlanReason>,
+    /// The *positive* reason a skipped file was skipped (spec 005 FR-011) — unlike
+    /// `reasons` (empty for a compliant file). `None` when the file is not skipped.
+    /// Never serialized for a drift job (skipped files are not enqueued), so this is
+    /// wire-compatible with the strict `FilePlan`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub skip_reason: Option<SkipReason>,
+}
+
+/// Why a compliant/gate-skipped file was left alone (spec 005 FR-011).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", tag = "kind", content = "detail")]
+pub enum SkipReason {
+    /// The video codec is already acceptable (in `skip_codecs`).
+    CompliantCodec(String),
+    /// The source is below `skip_if_resolution_below`.
+    ResolutionBelow(String),
+    /// The source is below `skip_if_bitrate_below`.
+    BitrateBelow(String),
+}
+
+/// Options that steer [`plan_with`] (spec 005). Default = the ordinary [`plan`] behavior.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct PlanOptions {
+    /// Force a transcode even when the file would be skipped (operator *force*): suppresses
+    /// `should_skip` and turns a would-be `Copy` into an `Encode` to the profile's target.
+    pub force: bool,
 }
 
 // --- Planning logic (port of `_engine/plan.py`) ---
@@ -290,10 +316,21 @@ pub(crate) fn parse_resolution_height(s: &str) -> Option<u32> {
     }
 }
 
-/// Compute the full [`FilePlan`] for a file (port of `plan_from_probe`).
+/// Compute the full [`FilePlan`] for a file (port of `plan_from_probe`), ordinary behavior.
+#[must_use]
+pub fn plan(input_path: &str, probe: &Probe, profile: &Profile) -> FilePlan {
+    plan_with(input_path, probe, profile, &PlanOptions::default())
+}
+
+/// [`plan`] with [`PlanOptions`] — the operator *force* path (spec 005) suppresses the skip.
 #[must_use]
 #[allow(clippy::too_many_lines)] // faithful 1:1 port of the single Python `plan_from_probe`
-pub fn plan(input_path: &str, probe: &Probe, profile: &Profile) -> FilePlan {
+pub fn plan_with(
+    input_path: &str,
+    probe: &Probe,
+    profile: &Profile,
+    opts: &PlanOptions,
+) -> FilePlan {
     let output_ext = container_suffix(profile);
     // Path handling mirrors Python `pathlib` (suffix/with_suffix), NOT Rust's
     // `Path::extension`/`with_extension` — they diverge on dotted names (see
@@ -336,6 +373,7 @@ pub fn plan(input_path: &str, probe: &Probe, profile: &Profile) -> FilePlan {
                 message: "no video stream present".to_string(),
                 scope: PlanScope::Video,
             }],
+            skip_reason: None,
         };
     };
 
@@ -517,21 +555,49 @@ pub fn plan(input_path: &str, probe: &Probe, profile: &Profile) -> FilePlan {
     // Skip gates (spec 004): a source already *below* a resolution/bitrate threshold
     // is left alone even if its codec would otherwise be transcoded. Only fires on a
     // KNOWN value (>0) — an unknown (0) probe field never triggers a skip.
-    let gate_skip = {
-        let res = profile
-            .video
-            .skip_if_resolution_below
-            .as_deref()
-            .and_then(parse_resolution_height)
-            .is_some_and(|t| video.height > 0 && video.height < t);
-        let br = profile
-            .video
-            .skip_if_bitrate_below
-            .as_ref()
-            .is_some_and(|b| video.bitrate > 0 && u64::from(video.bitrate) < b.bps());
-        res || br
-    };
-    let should_skip = compliant || gate_skip;
+    let res_gate = profile
+        .video
+        .skip_if_resolution_below
+        .as_deref()
+        .and_then(parse_resolution_height)
+        .is_some_and(|t| video.height > 0 && video.height < t);
+    let br_gate = profile
+        .video
+        .skip_if_bitrate_below
+        .as_ref()
+        .is_some_and(|b| video.bitrate > 0 && u64::from(video.bitrate) < b.bps());
+
+    // Operator *force* (spec 005 FR-010): transcode even a would-be-skipped file, and turn
+    // a compliant `Copy` into an `Encode` to the profile's target so the command isn't a no-op.
+    let would_skip = compliant || res_gate || br_gate;
+    let should_skip = !opts.force && would_skip;
+    if opts.force && video_action == VideoAction::Copy {
+        video_action = VideoAction::Encode;
+    }
+
+    // The positive skip reason (spec 005 FR-011) — only when actually skipped.
+    let skip_reason = should_skip
+        .then(|| {
+            if compliant {
+                Some(SkipReason::CompliantCodec(video.codec.clone()))
+            } else if res_gate {
+                profile
+                    .video
+                    .skip_if_resolution_below
+                    .clone()
+                    .map(SkipReason::ResolutionBelow)
+            } else if br_gate {
+                profile
+                    .video
+                    .skip_if_bitrate_below
+                    .as_ref()
+                    .map(|b| SkipReason::BitrateBelow(b.as_arg().to_string()))
+            } else {
+                None
+            }
+        })
+        .flatten();
+
     FilePlan {
         status: if should_skip {
             PlanStatus::Compliant
@@ -551,6 +617,7 @@ pub fn plan(input_path: &str, probe: &Probe, profile: &Profile) -> FilePlan {
         audio: audio_items,
         subtitles: subtitle_items,
         reasons,
+        skip_reason,
     }
 }
 
@@ -645,6 +712,57 @@ mod tests {
                 &with(r#""skip_if_resolution_below":"480p""#)
             )
             .should_skip
+        );
+    }
+
+    #[test]
+    fn force_transcodes_a_compliant_file() {
+        // hevc source + hevc in skip_codecs → normally skipped (Copy).
+        let probe = Probe {
+            video: Some(video("hevc", "")),
+            ..Default::default()
+        };
+        let normal = plan("x.mkv", &probe, &profile(HEVC));
+        assert!(normal.should_skip);
+        assert_eq!(normal.video.action, VideoAction::Copy);
+
+        // force → not skipped, and the Copy becomes an Encode (not a no-op command).
+        let forced = plan_with(
+            "x.mkv",
+            &probe,
+            &profile(HEVC),
+            &PlanOptions { force: true },
+        );
+        assert!(!forced.should_skip);
+        assert_eq!(forced.video.action, VideoAction::Encode);
+        assert_eq!(forced.skip_reason, None);
+    }
+
+    #[test]
+    fn skip_reason_reports_why() {
+        // Compliant codec → CompliantCodec.
+        let hevc = Probe {
+            video: Some(video("hevc", "")),
+            ..Default::default()
+        };
+        assert_eq!(
+            plan("x.mkv", &hevc, &profile(HEVC)).skip_reason,
+            Some(SkipReason::CompliantCodec("hevc".into()))
+        );
+
+        // Below the resolution gate → ResolutionBelow.
+        let mut v = video("h264", "");
+        v.height = 400;
+        let small = Probe {
+            video: Some(v),
+            ..Default::default()
+        };
+        let gated = profile(
+            r#"{"video":{"codec":"hevc","skip_codecs":["hevc"],"skip_if_resolution_below":"480p"},"audio":{},"subtitles":{},"output":{}}"#,
+        );
+        assert_eq!(
+            plan("x.mkv", &small, &gated).skip_reason,
+            Some(SkipReason::ResolutionBelow("480p".into()))
         );
     }
 

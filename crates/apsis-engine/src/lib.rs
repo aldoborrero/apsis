@@ -64,8 +64,9 @@ pub use overrides::{
     CEL_CONTEXT_VERSION, FileFacts, build_context, resolve_effective_profile, validate_rules,
 };
 pub use plan::{
-    AudioTrackPlan, FilePlan, OutputPlan, PlanReason, PlanScope, PlanStatus, ReasonCode, SubAction,
-    SubtitleTrackPlan, TrackAction, VideoAction, VideoPlan, plan,
+    AudioTrackPlan, FilePlan, OutputPlan, PlanOptions, PlanReason, PlanScope, PlanStatus,
+    ReasonCode, SkipReason, SubAction, SubtitleTrackPlan, TrackAction, VideoAction, VideoPlan,
+    plan, plan_with,
 };
 pub use probe::{Probe, StreamInfo, parse_probe};
 pub use subtitles::filter_subtitles;
