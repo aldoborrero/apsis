@@ -17,15 +17,22 @@ A web console **cannot be built until those are amended.**
 
 **Required governance action (a prerequisite task, not optional):** amend the constitution
 (bump the version, update the amendment log) and reflect it in `docs/design/rust-scheduler.md`
-D5, from *"no bespoke UI"* to a **bounded** carve-out:
+D5, from *"no bespoke UI"* to the carve-out below. This is a **larger** widening than a thin
+skin: the console is a **Leptos full-stack reactive app** (SSR + WASM hydration + a
+`cargo-leptos` build pipeline), so the amendment deliberately relaxes "thin" for the operator
+console specifically — accepting a compiled WASM frontend and a build step in exchange for a
+real interactive UI.
 
-> A bounded, read-mostly **operator console** is permitted. It MUST be a thin skin over the
-> spec 005 NATS protocol: it holds no privileged backdoor and can mutate state only by
-> publishing to the **defined control-intent surface** (the spec 005 control subjects) — the
-> same owner-mediated surface, not "whatever raw NATS access allows". It MUST NOT edit config
-> (config stays git-only TOML), MUST NOT contain a visual pipeline graph/editor, and does not
-> replace Grafana for aggregate/historical observability. Still prohibited: config editing in
-> the UI, a visual graph/editor, a dynamic-ABI/WASM plugin host.
+> A **reactive operator console** is permitted, built with Leptos (full-stack Rust: SSR +
+> client-side hydration). It reads only the spec 005 NATS surface (KV state/decision + the
+> progress subjects) and mutates state ONLY by publishing to the **defined control-intent
+> surface** (the spec 005 control subjects) — no privileged backdoor; its server functions may
+> do nothing the `nats` CLI cannot. It MUST NOT edit config (config stays git-only TOML), MUST
+> NOT contain a visual pipeline graph/editor, and does NOT replace Grafana for aggregate/
+> historical observability. The console's own compiled WASM frontend (Leptos hydration) is
+> **not** the prohibited runtime **plugin host** — a dynamic-ABI/WASM host that loads untrusted
+> plugins stays prohibited. Still prohibited: config editing in the UI, a visual graph/editor,
+> a dynamic-ABI/WASM plugin host.
 
 If the amendment is rejected, this spec is closed and the control protocol (spec 005)
 remains fully usable via the `nats` CLI + Grafana. **Do not implement 006 before the
@@ -52,7 +59,8 @@ progress subject — no new backend beyond spec 005.
    lists each with its status (Done / Pending / InProgress / Failed) read from the KV, plus
    an "ignored" indicator for any file carrying the on-disk ignore marker (spec 005 FR-016).
 2. **Given** a running transcode, **When** the operator watches, **Then** its progress
-   updates live (server-sent events off the spec 005 progress subject) without a refresh.
+   updates live (a Leptos signal fed by a server function streaming the spec 005 progress
+   subject) without a refresh.
 
 ### User Story 2 - Understand a decision (Priority: P2)
 
@@ -107,9 +115,12 @@ resulting state change; behaviour is identical to issuing it from `nats`.
   new backend** — a missing capability is added to spec 005, not smuggled here.
 - **FR-003**: All writes MUST be **spec 005 intents**; the console MUST NOT touch the KV
   terminal state or media directly.
-- **FR-004**: The frontend MUST be **thin** — server-rendered with progressive enhancement
-  (htmx + SSE), **no SPA build step**, assets embedded in the binary. (Matches the "thin"
-  value and the retired pyflows UI precedent.)
+- **FR-004**: The frontend is **Leptos** (full-stack Rust: SSR + client-side hydration).
+  Reactive per-file state and live progress use Leptos **signals**; server-side reads/writes
+  use **server functions** (transparently called from the client, running only on the server —
+  so all NATS access is server-side). Built with **`cargo-leptos`** (a wasm frontend target +
+  the native server binary). This is served by/integrated with **axum** (`leptos_axum`), the
+  same tokio runtime as `async-nats`.
 - **FR-005**: The console MUST sit behind the homelab **SSO (Zitadel OIDC)** via the reverse
   proxy and be **mesh/LAN-only, never public** — control actions are mutations.
 - **FR-006**: The console MUST NOT provide **config editing** or a **visual pipeline
@@ -120,7 +131,8 @@ resulting state change; behaviour is identical to issuing it from `nats`.
 
 ### Key Entities
 
-- **apsis-web daemon** — NATS client + embedded web server; stateless projection of spec 005.
+- **apsis-web daemon** — a Leptos SSR server (on axum) + NATS client; a stateless projection of
+  spec 005 (its server functions read the KV/subjects and publish control intents).
 - **File row** — a rendered view of a KV `StateEntry` + its decision + (if running) live
   progress.
 - **Action** — a button mapped 1:1 to a spec 005 intent.
@@ -133,7 +145,7 @@ resulting state change; behaviour is identical to issuing it from `nats`.
 - **SC-003**: Every control button produces **exactly** the state change the equivalent
   `nats` command produces (verified by driving the same op both ways).
 - **SC-004**: The console can be **removed** and the deployment keeps working — control via
-  CLI, observability via Grafana are unaffected (proves it is a skin, not core).
+  CLI, observability via Grafana are unaffected (proves it is an optional layer, not core).
 - **SC-005**: The constitution amendment is landed and reflected in D5 **before** any
   console code is written.
 
@@ -143,5 +155,11 @@ resulting state change; behaviour is identical to issuing it from `nats`.
 - **Blocked on the constitution amendment** above — this is a hard prerequisite task.
 - The homelab Zitadel + reverse proxy are the auth/ingress substrate (as for other homelab
   services).
+- **Stack (decided): Leptos** (full-stack Rust, SSR + hydration) on **axum** via `leptos_axum`,
+  built with **`cargo-leptos`** (adds a wasm frontend target — the dev shell/flake gains
+  `cargo-leptos` + the `wasm32-unknown-unknown` target and the build-graph plumbing). Leptos
+  is the current leading Rust web framework (signals, server functions, SSR; outperforms
+  React). This deliberately accepts a WASM SPA + build pipeline for the console — a larger
+  relaxation of "thin" than an htmx skin, chosen for a real reactive UI.
 - Single page or a small set; no multi-user collaboration, no historical dashboards (those
   are Grafana).
