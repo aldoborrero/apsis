@@ -39,6 +39,27 @@ pub enum Outcome {
     Failed,
 }
 
+/// The *positive* reason the coordinator marked a file `Done`/skip — unlike the engine's
+/// `reasons` (empty for a compliant file), this says *why* it was skipped, for introspection
+/// (spec 005 FR-011). A new **permissive** type on purpose: it must NOT reuse the strict
+/// `deny_unknown_fields` `PlanReason`/`FilePlan`, whose additive changes would break old
+/// consumers one level deep.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DecisionKind {
+    CompliantCodec,
+    ResolutionBelow,
+    BitrateBelow,
+    ChangesRequired,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Decision {
+    pub kind: DecisionKind,
+    /// Human/machine detail, e.g. the compliant codec or the gate threshold (`"hevc"`, `"480p"`).
+    pub detail: String,
+}
+
 /// One file's transcode unit — published to `jobs.transcode.*`.
 ///
 /// Carries the abstract [`FilePlan`] (engine output), not an ffmpeg command: the
@@ -78,6 +99,10 @@ pub struct StateEntry {
     #[serde(with = "time::serde::rfc3339")]
     pub updated_at: OffsetDateTime,
     pub last_error: Option<String>,
+    /// Why this file was marked Done/skipped (spec 005 FR-011). Additive: `StateEntry` omits
+    /// `deny_unknown_fields`, so old consumers ignore it and old entries default it to `None`.
+    #[serde(default)]
+    pub decision: Option<Decision>,
 }
 
 /// Worker → `jobs.result` (core publish). The coordinator folds it into metrics +
@@ -110,6 +135,7 @@ mod tests {
             used_fallback: false,
             updated_at: OffsetDateTime::UNIX_EPOCH,
             last_error: None,
+            decision: None,
         };
         let json = serde_json::to_string(&e).unwrap();
         assert_eq!(serde_json::from_str::<StateEntry>(&json).unwrap(), e);

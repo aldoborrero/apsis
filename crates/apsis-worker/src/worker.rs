@@ -430,6 +430,7 @@ impl Worker {
             used_fallback,
             updated_at: OffsetDateTime::now_utc(),
             last_error,
+            decision: None,
         }
     }
 }

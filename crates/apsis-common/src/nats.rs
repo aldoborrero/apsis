@@ -17,6 +17,9 @@ pub const SUBJECT_WILDCARD: &str = "jobs.transcode.>";
 pub const SUBJECT_LOCAL: &str = "jobs.transcode.local";
 pub const SUBJECT_RESULT: &str = "jobs.result";
 pub const KV_BUCKET: &str = "transcode_state";
+/// Coordinator-owned key (in `KV_BUCKET`) holding the effective [`crate::control::PauseState`].
+/// Distinct from the file-path state keys (which are absolute paths, so no collision).
+pub const KV_CONTROL_PAUSE: &str = "__control__/pause";
 pub const CONSUMER_NAME: &str = "worker-local";
 
 /// Consumer lease/retry tuning (contract §consumer). Usually derived from the

@@ -3,6 +3,49 @@
 use std::path::Path;
 use std::time::UNIX_EPOCH;
 
+/// Suffix of the on-disk operator "never transcode this" marker (spec 005 FR-016). It sits
+/// beside the media as `<file>.apsisignore`, so an operator *ignore* is **recoverable** (it
+/// survives a KV wipe — Principle I) rather than a live-only KV state.
+pub const IGNORE_MARKER_SUFFIX: &str = ".apsisignore";
+
+/// Path of the ignore marker for a media file.
+fn ignore_marker_path(media: &Path) -> std::path::PathBuf {
+    let mut s = media.as_os_str().to_os_string();
+    s.push(IGNORE_MARKER_SUFFIX);
+    std::path::PathBuf::from(s)
+}
+
+/// Whether `media` carries the ignore marker (the reconcile gate consults this).
+#[must_use]
+pub fn has_ignore_marker(media: &Path) -> bool {
+    ignore_marker_path(media).exists()
+}
+
+/// Write the ignore marker beside `media` (idempotent).
+///
+/// # Errors
+/// Propagates the I/O error if the marker cannot be created.
+pub fn set_ignore_marker(media: &Path) -> std::io::Result<()> {
+    std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(true)
+        .write(true)
+        .open(ignore_marker_path(media))
+        .map(|_| ())
+}
+
+/// Remove the ignore marker for `media` (no error if absent).
+///
+/// # Errors
+/// Propagates an I/O error other than "not found".
+pub fn clear_ignore_marker(media: &Path) -> std::io::Result<()> {
+    match std::fs::remove_file(ignore_marker_path(media)) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(e),
+    }
+}
+
 /// Default video extensions (lowercase, no dot) when a library doesn't override.
 pub const DEFAULT_VIDEO_EXTENSIONS: &[&str] = &[
     "mkv", "mp4", "avi", "mov", "m4v", "ts", "m2ts", "wmv", "flv", "webm", "mpg", "mpeg",

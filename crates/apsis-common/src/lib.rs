@@ -6,6 +6,7 @@
 //! impls + in-memory fakes ([`store`]) are all implemented (spec 002 foundation).
 
 pub mod config;
+pub mod control;
 pub mod fsutil;
 pub mod nats;
 pub mod obs;
@@ -19,11 +20,14 @@ pub use config::{
     BackendConfig, BackendKind, ConfigError, ConsumerConfig, Library, Reconcile, SchedulerConfig,
     VerifyConfig, WorkerConfig, load_scheduler, load_worker,
 };
-pub use fsutil::{DEFAULT_VIDEO_EXTENSIONS, is_video, version_token};
+pub use fsutil::{
+    DEFAULT_VIDEO_EXTENSIONS, clear_ignore_marker, has_ignore_marker, is_video, set_ignore_marker,
+    version_token,
+};
 pub use nats::{ConsumerTuning, bind_job_consumer, connect, ensure_topology};
 pub use obs::init_tracing;
 pub use pathmap::PathMap;
-pub use schema::{Job, Outcome, StateEntry, Status, TranscodeResult};
+pub use schema::{Decision, DecisionKind, Job, Outcome, StateEntry, Status, TranscodeResult};
 pub use store::{
     FakeJobPublisher, FakeStateStore, JobPublisher, KvStateStore, NatsPublisher, StateStore,
     StoreError, publish_result,

@@ -209,6 +209,7 @@ fn entry(status: Status, ver: &str, last_error: Option<String>) -> StateEntry {
         used_fallback: false,
         updated_at: OffsetDateTime::now_utc(),
         last_error,
+        decision: None,
     }
 }
 

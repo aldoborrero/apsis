@@ -305,6 +305,7 @@ mod tests {
             used_fallback: false,
             updated_at: OffsetDateTime::UNIX_EPOCH,
             last_error: None,
+            decision: None,
         }
     }
 
