@@ -20,11 +20,12 @@ A web console **cannot be built until those are amended.**
 D5, from *"no bespoke UI"* to a **bounded** carve-out:
 
 > A bounded, read-mostly **operator console** is permitted. It MUST be a thin skin over the
-> spec 005 NATS protocol (it holds no privileged backdoor and cannot mutate state except by
-> publishing the same intents the CLI can). It MUST NOT edit config (config stays git-only
-> TOML), MUST NOT contain a visual pipeline graph/editor, and does not replace Grafana for
-> aggregate/historical observability. Still prohibited: config editing in the UI, a visual
-> graph/editor, a dynamic-ABI/WASM plugin host.
+> spec 005 NATS protocol: it holds no privileged backdoor and can mutate state only by
+> publishing to the **defined control-intent surface** (the spec 005 control subjects) — the
+> same owner-mediated surface, not "whatever raw NATS access allows". It MUST NOT edit config
+> (config stays git-only TOML), MUST NOT contain a visual pipeline graph/editor, and does not
+> replace Grafana for aggregate/historical observability. Still prohibited: config editing in
+> the UI, a visual graph/editor, a dynamic-ABI/WASM plugin host.
 
 If the amendment is rejected, this spec is closed and the control protocol (spec 005)
 remains fully usable via the `nats` CLI + Grafana. **Do not implement 006 before the
