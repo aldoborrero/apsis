@@ -5,6 +5,7 @@ members = [
     "crates/apsis-common",
     "crates/apsis-coordinator",
     "crates/apsis-worker",
+    "crates/apsis-web",
 ]
 
 [workspace.package]
