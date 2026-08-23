@@ -53,6 +53,15 @@ pub(crate) struct Running {
     cancel: Arc<tokio::sync::Notify>,
     /// The subscriber sets the disposition before firing `cancel`; `process` reads it.
     disposition: Arc<StdMutex<Option<Disposition>>>,
+    /// Set once the transcode has committed to installing (past the cancel point) — a cancel
+    /// arriving after this is too late and gets `AlreadyDone`, not a false `Cancelled`.
+    committing: Arc<std::sync::atomic::AtomicBool>,
+}
+
+/// Lock a mutex, tolerating poison (the guarded control state is trivially recoverable, so a
+/// panic elsewhere must not cascade into killing the worker loop — FR-010).
+fn lock_ignore_poison<T>(m: &StdMutex<T>) -> std::sync::MutexGuard<'_, T> {
+    m.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 fn build_backend(bc: &BackendConfig, ffmpeg: &str) -> Box<dyn Backend> {
@@ -123,11 +132,13 @@ impl Worker {
         self.effective_pause().await.is_some()
     }
 
-    /// Fire the in-flight job's cancel (defer) if one is running — used by a hard pause
-    /// to abort the current transcode (spec 005 FR-002).
+    /// Fire the in-flight job's cancel (defer) if one is running and not yet committing —
+    /// used by a hard pause to abort the current transcode (spec 005 FR-002).
     fn cancel_running(&self) {
-        if let Some(r) = self.running.lock().expect("registry lock").as_ref() {
-            *r.disposition.lock().expect("disposition lock") = Some(Disposition::Defer);
+        if let Some(r) = lock_ignore_poison(&self.running).as_ref()
+            && !r.committing.load(std::sync::atomic::Ordering::SeqCst)
+        {
+            *lock_ignore_poison(&r.disposition) = Some(Disposition::Defer);
             r.cancel.notify_one();
         }
     }
@@ -169,12 +180,21 @@ impl Worker {
             let outcome = {
                 let mut proc = std::pin::pin!(self.process(&job));
                 let period = (tuning.ack_wait / 2).max(std::time::Duration::from_secs(1));
+                // The ack heartbeat ticks at `period` (lease keep-alive); a SEPARATE 2s tick
+                // checks for a hard pause, so aborting an in-flight transcode is prompt (FR-002)
+                // instead of waiting up to ack_wait/2 (15 min at the default lease).
+                let mut ack_tick = tokio::time::interval(period);
+                ack_tick.tick().await; // consume the immediate first tick
+                let mut pause_tick = tokio::time::interval(std::time::Duration::from_secs(2));
+                pause_tick.tick().await;
                 loop {
                     tokio::select! {
                         biased;
                         r = &mut proc => break r,
-                        () = tokio::time::sleep(period) => {
+                        _ = ack_tick.tick() => {
                             let _ = msg.ack_with(AckKind::Progress).await;
+                        }
+                        _ = pause_tick.tick() => {
                             // Hard pause (spec 005 FR-002): abort the in-flight transcode.
                             if matches!(
                                 self.effective_pause().await,
@@ -242,13 +262,15 @@ impl Worker {
         let in_bytes = std::fs::metadata(&local_in).map_or(0, |m| m.len());
 
         // Cancellation (spec 005 US2): register this job so the control subscriber can
-        // interrupt it, then run the (interruptible) transcode, then deregister.
+        // interrupt it, then run the (interruptible) transcode.
         let cancel = Arc::new(tokio::sync::Notify::new());
         let disposition: Arc<StdMutex<Option<Disposition>>> = Arc::new(StdMutex::new(None));
-        *self.running.lock().expect("registry lock") = Some(Running {
+        let committing = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        *lock_ignore_poison(&self.running) = Some(Running {
             job_id: job.id.to_string(),
             cancel: cancel.clone(),
             disposition: disposition.clone(),
+            committing: committing.clone(),
         });
 
         // Live progress (spec 005 T010): a task drains parsed ffmpeg progress ticks and
@@ -282,18 +304,22 @@ impl Worker {
             Some(&ptx),
         )
         .await;
-        *self.running.lock().expect("registry lock") = None;
         drop(ptx); // end the progress task
-        let t = t?;
+        let t = match t {
+            Ok(t) => t,
+            Err(e) => {
+                *lock_ignore_poison(&self.running) = None; // deregister on a run error
+                return Err(e.into());
+            }
+        };
 
         // Operator cancel: apply the disposition (defer → clear KV so the next reconcile
         // re-plans; ignore → recoverable on-disk marker) and drain the message. NOT a
         // transcode failure — no result published, no `Failed@version` recorded.
         if t.outcome.cancelled {
+            *lock_ignore_poison(&self.running) = None; // deregister
             let _ = std::fs::remove_file(&t.outcome.temp);
-            let disp = disposition
-                .lock()
-                .expect("disposition lock")
+            let disp = lock_ignore_poison(&disposition)
                 .take()
                 .unwrap_or(Disposition::Defer);
             match disp {
@@ -309,6 +335,12 @@ impl Worker {
             info!(job_id = %job.id, ?disp, "transcode cancelled by operator");
             return Ok(Outcome::Failed); // value ignored on the ack path; message drains
         }
+
+        // Past the point of no return: the transcode succeeded/failed on its own and we are
+        // about to verify + install. A cancel arriving now is too late → the subscriber
+        // replies `AlreadyDone` instead of a false `Cancelled`. The registry stays populated
+        // (with `committing` set) until the next job overwrites it.
+        committing.store(true, std::sync::atomic::Ordering::SeqCst);
 
         // Which backend produced the surviving output (for the span / logs).
         let backend = if t.used_fallback {
@@ -586,10 +618,18 @@ pub(crate) async fn serve_cancel(
             continue;
         };
         let outcome = {
-            let guard = registry.lock().expect("registry lock");
+            let guard = lock_ignore_poison(&registry);
             match guard.as_ref() {
+                // Past the commit point → the transcode already installed (or is installing);
+                // a cancel is too late. Report it honestly rather than a false Cancelled.
+                Some(r)
+                    if r.job_id == req.job_id
+                        && r.committing.load(std::sync::atomic::Ordering::SeqCst) =>
+                {
+                    CancelOutcome::AlreadyDone
+                }
                 Some(r) if r.job_id == req.job_id => {
-                    *r.disposition.lock().expect("disposition lock") = Some(req.disposition);
+                    *lock_ignore_poison(&r.disposition) = Some(req.disposition);
                     r.cancel.notify_one();
                     CancelOutcome::Cancelled
                 }

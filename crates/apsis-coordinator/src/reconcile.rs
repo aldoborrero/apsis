@@ -216,17 +216,39 @@ impl<S: StateStore, Q: JobPublisher, P: Prober> Reconciler<S, Q, P> {
     ) -> apsis_common::control::StateOutcome {
         use apsis_common::control::{StateOp, StateOutcome};
         let p = std::path::Path::new(&req.path);
+        // The current status GATES every op: the operator ops must never touch a live
+        // `Pending`/`InProgress` claim (a separate worker owns it). Deleting or re-claiming
+        // an in-flight entry would steal the claim (double-transcode) or be silently
+        // resurrected by the worker's terminal write. So these ops only act on a *settled*
+        // (`Done`/`Failed`) or absent file. Cancel a running job with `apsis.control.cancel`.
+        let status = match self.store.get(&req.path).await {
+            Ok(s) => s.map(|(e, _)| e.status),
+            Err(_) => return StateOutcome::Noop,
+        };
+        let in_flight = matches!(status, Some(Status::Pending | Status::InProgress));
         match req.op {
             // Clear the entry → the change-gate misses → the next reconcile re-plans.
-            StateOp::Requeue | StateOp::Retry => match self.store.get(&req.path).await {
-                Ok(Some(_)) => match self.store.delete(&req.path).await {
+            StateOp::Requeue => match status {
+                Some(Status::Done | Status::Failed) => match self.store.delete(&req.path).await {
                     Ok(()) => StateOutcome::Applied,
                     Err(_) => StateOutcome::Noop,
                 },
-                Ok(None) => StateOutcome::NotFound,
-                Err(_) => StateOutcome::Noop,
+                Some(_) => StateOutcome::Noop, // in flight — don't clobber a live claim
+                None => StateOutcome::NotFound,
+            },
+            // Retry only a dead-lettered failure.
+            StateOp::Retry => match status {
+                Some(Status::Failed) => match self.store.delete(&req.path).await {
+                    Ok(()) => StateOutcome::Applied,
+                    Err(_) => StateOutcome::Noop,
+                },
+                Some(_) => StateOutcome::Noop,
+                None => StateOutcome::NotFound,
             },
             StateOp::MarkDone => {
+                if in_flight {
+                    return StateOutcome::Noop; // don't override a running/queued job
+                }
                 let Ok(ver) = apsis_common::version_token(p) else {
                     return StateOutcome::NotFound; // file missing
                 };
@@ -240,6 +262,9 @@ impl<S: StateStore, Q: JobPublisher, P: Prober> Reconciler<S, Q, P> {
                 }
             }
             StateOp::Force => {
+                if in_flight {
+                    return StateOutcome::Noop; // already queued/running — forcing would steal the claim
+                }
                 let Ok(ver) = apsis_common::version_token(p) else {
                     return StateOutcome::NotFound;
                 };
@@ -566,6 +591,45 @@ mod tests {
             r.apply_state_op(&absent, &cfg).await,
             StateOutcome::NotFound
         );
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[tokio::test]
+    async fn state_ops_never_touch_an_in_flight_claim() {
+        use apsis_common::control::{StateControlRequest, StateOp, StateOutcome};
+        // A live InProgress claim must be immune to force/requeue/retry/mark-done — else the
+        // op would steal the claim (double-transcode) or be resurrected by the worker.
+        let (r, _) = reconciler(video("hevc"));
+        let (dir, path) = temp_media();
+        let cfg = sched_cfg(&dir);
+        r.store
+            .put(&path, &super::entry(Status::InProgress, "1:1", None))
+            .await
+            .unwrap();
+
+        for op in [
+            StateOp::Force,
+            StateOp::Requeue,
+            StateOp::Retry,
+            StateOp::MarkDone,
+        ] {
+            let req = StateControlRequest {
+                path: path.clone(),
+                op,
+            };
+            assert_eq!(
+                r.apply_state_op(&req, &cfg).await,
+                StateOutcome::Noop,
+                "{op:?} must not touch an InProgress claim"
+            );
+        }
+        // The claim is untouched and no job was enqueued.
+        assert_eq!(
+            r.store.get(&path).await.unwrap().unwrap().0.status,
+            Status::InProgress
+        );
+        assert!(r.publisher.is_empty(), "no job enqueued over a live claim");
 
         std::fs::remove_dir_all(&dir).ok();
     }
