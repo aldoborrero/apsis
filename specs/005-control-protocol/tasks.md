@@ -7,14 +7,14 @@ Format: `[ID] [P?] [Story] Description`. `[P]` = parallelizable (different files
 
 ## Phase 1: Foundational (blocks all stories)
 
-- [ ] T001 [P] `apsis-common/src/control.rs` (NEW): subject constants + message schemas
-  (`PauseIntent`, `CancelRequest`/`Reply`, `StateControlRequest`/`Reply`, `ProgressEvent`) and
-  their enums per contracts/control-subjects.md. Unit-test serde round-trips.
-- [ ] T002 [P] `apsis-common/src/schema.rs`: add `StateEntry.decision: Option<Decision>`
-  (`#[serde(default)]`) + the permissive `Decision`/`DecisionKind` types (NOT embedding
-  `PlanReason`/`FilePlan`). Test: old JSON without `decision` still deserializes.
-- [ ] T003 [P] `apsis-common`: the on-disk ignore-marker helpers (`has_/set_/clear_ignore_marker`)
-  + the `PauseState` type and the `__control__/pause` KV key constant.
+- [x] T001 [P] `apsis-common/src/control.rs`: subject constants + message schemas
+  (`PauseIntent`/`PauseState`, `CancelRequest`/`Reply`, `StateControlRequest`/`Reply`,
+  `ProgressEvent`). Serde round-trip + pause wire-shape tests.
+- [x] T002 [P] `apsis-common/src/schema.rs`: `StateEntry.decision: Option<Decision>`
+  (`#[serde(default)]`) + permissive `Decision`/`DecisionKind` (not embedding
+  `PlanReason`/`FilePlan`).
+- [x] T003 [P] `apsis-common`: on-disk ignore-marker helpers (`fsutil`) + `PauseState`
+  (`apply`/`effective`) + `KV_CONTROL_PAUSE`; `KvStateStore` gains `get_pause`/`put_pause`.
 
 ## Phase 2: User Story 1 — Pause & resume (Priority: P1) 🎯 MVP
 
@@ -22,15 +22,15 @@ Format: `[ID] [P?] [Story] Description`. `[P]` = parallelizable (different files
 is immediate. **Independent test**: publish pause intent, confirm no new claim (read KV),
 clear, confirm resume.
 
-- [ ] T004 [US1] `apsis-coordinator/src/control.rs` (NEW): subscribe `apsis.control.pause`;
-  fold each `PauseIntent` into `PauseState` and write the `__control__/pause` KV key (sole
-  writer). Wire into `main.rs`.
-- [ ] T005 [US1] `apsis-worker`: watch `__control__/pause`; **before each `claim()`** consult
-  the effective state for `global`/this `worker_id`; soft-paused → don't claim. Re-read on
-  reconnect (not solely via the watch stream) — FR-001.
+- [x] T004 [US1] `apsis-coordinator/src/main.rs`: `consume_pause_control` subscribes to
+  `apsis.control.pause`, folds each intent into the persisted `PauseState` (sole writer),
+  emits `apsis_control_ops_total{op=pause}`.
+- [x] T005 [US1] `apsis-worker`: pause gate before each claim (`is_paused` reads the key each
+  cycle — reconnect re-read, fails open on error); soft-paused → don't pull. `APSIS_WORKER_ID`.
 - [ ] T006 [US1] Integration test (NATS-backed, alongside `crash_safety.rs`): soft pause →
   worker claims nothing, queue intact; clear → claiming resumes; pause survives a worker
-  restart. Hard-pause path deferred to US2 (needs cancel).
+  restart. Hard-pause path deferred to US2 (needs cancel). *(Core logic unit-tested; the
+  end-to-end NATS assertion remains.)*
 
 ## Phase 3: User Story 2 — Cancel the active transcode (Priority: P2)
 
