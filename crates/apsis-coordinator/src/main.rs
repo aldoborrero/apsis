@@ -89,10 +89,16 @@ async fn serve() -> Result<(), Fatal> {
     let tuning = ConsumerTuning::for_concurrency(1);
     let kv = ensure_topology(&ctx, &tuning).await?;
 
+    let store = KvStateStore::new(kv);
+
     // Consume the worker's result feed for central metrics + a completion log
     // (T023). The worker owns the terminal KV write — it records `Failed@version`
     // itself on dead-letter, so this is the observability half, not a 2nd writer.
-    tokio::spawn(consume_results(client));
+    tokio::spawn(consume_results(client.clone()));
+
+    // Own the pause control state (spec 005 US1): fold pause intents into the KV key
+    // (the coordinator is the sole writer); workers watch it.
+    tokio::spawn(consume_pause_control(client.clone(), store.clone()));
 
     // Startup: sweep crash-orphaned temps (FR-008) before the first reconcile.
     for lib in &cfg.libraries {
@@ -103,7 +109,7 @@ async fn serve() -> Result<(), Fatal> {
     }
 
     let reconciler = Reconciler {
-        store: KvStateStore::new(kv),
+        store,
         publisher: NatsPublisher::new(ctx),
         prober: FfprobeProber {
             ffprobe: ffprobe.into(),
@@ -205,6 +211,38 @@ async fn consume_results(client: async_nats::Client) {
         );
     }
     tracing::warn!("jobs.result subscription ended");
+}
+
+/// Own the pause control state (spec 005 US1): subscribe to `apsis.control.pause`, fold each
+/// [`PauseIntent`] into the persisted [`PauseState`], and write it back. The coordinator is
+/// the **sole writer** of the pause key (FR-014), so this read-modify-write is race-free.
+///
+/// A subscribe error is logged, not fatal — losing the control feed costs operator control,
+/// never correctness.
+async fn consume_pause_control(client: async_nats::Client, store: KvStateStore) {
+    use apsis_common::control::{PauseIntent, SUBJECT_CONTROL_PAUSE};
+    let mut sub = match client.subscribe(SUBJECT_CONTROL_PAUSE).await {
+        Ok(sub) => sub,
+        Err(e) => {
+            tracing::error!(error = %e, "could not subscribe to control.pause");
+            return;
+        }
+    };
+    while let Some(msg) = sub.next().await {
+        let Ok(intent) = serde_json::from_slice::<PauseIntent>(&msg.payload) else {
+            tracing::warn!("undecodable pause intent dropped");
+            continue;
+        };
+        let mut state = store.get_pause().await.unwrap_or_default();
+        state.apply(&intent);
+        if let Err(e) = store.put_pause(&state).await {
+            tracing::error!(error = %e, "failed to persist pause state");
+            continue;
+        }
+        metrics::counter!("apsis_control_ops_total", "op" => "pause").increment(1);
+        tracing::info!(?intent.scope, ?intent.mode, set = intent.set, "pause intent applied");
+    }
+    tracing::warn!("control.pause subscription ended");
 }
 
 /// Reconcile passes are fast (a filesystem walk + probes of only what changed);

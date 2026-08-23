@@ -78,12 +78,42 @@ pub trait JobPublisher: Send + Sync {
 
 /// KV-backed [`StateStore`]. The inner `Store` is private so callers go through
 /// the trait (and its CAS error mapping), not the raw kv API.
+#[derive(Clone)]
 pub struct KvStateStore(Store);
 
 impl KvStateStore {
     #[must_use]
     pub fn new(store: Store) -> Self {
         Self(store)
+    }
+
+    /// Read the effective [`crate::control::PauseState`] (spec 005). Absent = not paused.
+    ///
+    /// # Errors
+    /// Backend or deserialization failure.
+    pub async fn get_pause(&self) -> Result<crate::control::PauseState, StoreError> {
+        let entry = self
+            .0
+            .entry(crate::nats::KV_CONTROL_PAUSE)
+            .await
+            .map_err(|e| StoreError::Backend(e.into()))?;
+        match entry {
+            Some(e) if e.operation == Operation::Put => Ok(serde_json::from_slice(&e.value)?),
+            _ => Ok(crate::control::PauseState::default()),
+        }
+    }
+
+    /// Persist the pause state. **Coordinator-only writer** (spec 005 FR-014).
+    ///
+    /// # Errors
+    /// Serialization or backend failure.
+    pub async fn put_pause(&self, state: &crate::control::PauseState) -> Result<(), StoreError> {
+        let bytes = to_bytes(state)?;
+        self.0
+            .put(crate::nats::KV_CONTROL_PAUSE, bytes)
+            .await
+            .map_err(|e| StoreError::Backend(e.into()))?;
+        Ok(())
     }
 }
 

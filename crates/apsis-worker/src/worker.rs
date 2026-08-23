@@ -38,6 +38,8 @@ pub(crate) struct Worker {
     verify: VerifyConfig,
     ffprobe: PathBuf,
     stall_timeout: std::time::Duration,
+    /// This worker's id for per-worker pause targeting (`APSIS_WORKER_ID`, default `default`).
+    id: String,
 }
 
 fn build_backend(bc: &BackendConfig, ffmpeg: &str) -> Box<dyn Backend> {
@@ -80,6 +82,20 @@ impl Worker {
             verify: cfg.verify.clone(),
             ffprobe: cfg.ffprobe.clone(),
             stall_timeout: cfg.stall_timeout,
+            id: std::env::var("APSIS_WORKER_ID").unwrap_or_else(|_| "default".to_string()),
+        }
+    }
+
+    /// Whether this worker is currently paused (spec 005 US1). Reads the pause key each
+    /// call (covering reconnect re-read, FR-001). A read error **fails open** (not paused)
+    /// — a transient KV hiccup must not silently wedge the worker.
+    async fn is_paused(&self) -> bool {
+        match self.kv.get_pause().await {
+            Ok(state) => state.effective(&self.id).is_some(),
+            Err(e) => {
+                warn!(error = %e, "pause-state read failed; treating as not paused");
+                false
+            }
         }
     }
 
@@ -91,7 +107,16 @@ impl Worker {
     pub(crate) async fn run(&self, tuning: &ConsumerTuning) -> Result<()> {
         let consumer = bind_job_consumer(&self.ctx, tuning).await?;
         let mut messages = consumer.messages().await?;
-        while let Some(msg) = messages.next().await {
+        loop {
+            // Pause gate (spec 005 US1, FR-003): while paused, don't pull new work — queued
+            // jobs stay in the stream. An in-flight transcode is unaffected (the gate is only
+            // between claims). Reading the key each cycle also covers reconnect re-read.
+            while self.is_paused().await {
+                tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+            }
+            let Some(msg) = messages.next().await else {
+                break;
+            };
             let msg = msg?;
             let Ok(job) = serde_json::from_slice::<Job>(&msg.payload) else {
                 warn!("undecodable job dropped");

@@ -249,4 +249,62 @@ mod tests {
     fn progress_subject() {
         assert_eq!(subject_progress("01JABC"), "apsis.progress.01JABC");
     }
+
+    fn intent(scope: PauseScope, mode: PauseMode, set: bool) -> PauseIntent {
+        PauseIntent { scope, mode, set }
+    }
+
+    #[test]
+    fn pause_state_apply_and_clear() {
+        let mut s = PauseState::default();
+        assert_eq!(s.effective("rhea"), None, "default = not paused");
+
+        s.apply(&intent(PauseScope::Global, PauseMode::Soft, true));
+        assert_eq!(
+            s.effective("rhea"),
+            Some(PauseMode::Soft),
+            "global covers any worker"
+        );
+        assert_eq!(s.effective("io"), Some(PauseMode::Soft));
+
+        s.apply(&intent(PauseScope::Global, PauseMode::Soft, false));
+        assert_eq!(s.effective("rhea"), None, "cleared");
+
+        s.apply(&intent(
+            PauseScope::Worker("rhea".into()),
+            PauseMode::Hard,
+            true,
+        ));
+        assert_eq!(
+            s.effective("rhea"),
+            Some(PauseMode::Hard),
+            "per-worker only"
+        );
+        assert_eq!(s.effective("io"), None, "other workers unaffected");
+    }
+
+    #[test]
+    fn pause_effective_takes_the_stronger_mode() {
+        let mut s = PauseState::default();
+        s.apply(&intent(PauseScope::Global, PauseMode::Soft, true));
+        s.apply(&intent(
+            PauseScope::Worker("rhea".into()),
+            PauseMode::Hard,
+            true,
+        ));
+        // global Soft + worker Hard → Hard wins for rhea; global Soft for others.
+        assert_eq!(s.effective("rhea"), Some(PauseMode::Hard));
+        assert_eq!(s.effective("io"), Some(PauseMode::Soft));
+    }
+
+    #[test]
+    fn pause_state_round_trips() {
+        let mut s = PauseState::default();
+        s.apply(&intent(
+            PauseScope::Worker("rhea".into()),
+            PauseMode::Hard,
+            true,
+        ));
+        assert_eq!(round(&s), s);
+    }
 }
