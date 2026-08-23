@@ -63,6 +63,8 @@ pub trait StateStore: Send + Sync {
     -> Result<u64, StoreError>;
     /// Unconditional overwrite (used when folding a result into `Done`/`Failed`).
     async fn put(&self, key: &str, entry: &StateEntry) -> Result<u64, StoreError>;
+    /// Delete a key so the change-gate misses it (spec 005 re-queue/retry). Absent is Ok.
+    async fn delete(&self, key: &str) -> Result<(), StoreError>;
 }
 
 /// Publish a job. The subject is fixed to `jobs.transcode.local` (single-node);
@@ -115,18 +117,6 @@ impl KvStateStore {
             .map_err(|e| StoreError::Backend(e.into()))?;
         Ok(())
     }
-
-    /// Delete a key so the reconcile change-gate misses it and re-plans (spec 005:
-    /// the *defer* disposition + *re-queue*). Absent is not an error.
-    ///
-    /// # Errors
-    /// Backend failure.
-    pub async fn delete(&self, key: &str) -> Result<(), StoreError> {
-        self.0
-            .delete(key)
-            .await
-            .map_err(|e| StoreError::Backend(e.into()))
-    }
 }
 
 #[async_trait]
@@ -176,6 +166,13 @@ impl StateStore for KvStateStore {
         let bytes = to_bytes(entry)?;
         self.0
             .put(key, bytes)
+            .await
+            .map_err(|e| StoreError::Backend(e.into()))
+    }
+
+    async fn delete(&self, key: &str) -> Result<(), StoreError> {
+        self.0
+            .delete(key)
             .await
             .map_err(|e| StoreError::Backend(e.into()))
     }
@@ -290,6 +287,11 @@ impl StateStore for FakeStateStore {
 
     async fn put(&self, key: &str, entry: &StateEntry) -> Result<u64, StoreError> {
         Ok(self.inner.lock().unwrap().write(key, entry))
+    }
+
+    async fn delete(&self, key: &str) -> Result<(), StoreError> {
+        self.inner.lock().unwrap().map.remove(key);
+        Ok(())
     }
 }
 

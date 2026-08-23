@@ -11,8 +11,7 @@ use apsis_common::{
     has_ignore_marker,
 };
 use apsis_engine::{
-    FileFacts, Probe, Profile, SkipReason, build_context, parse_probe, plan,
-    resolve_effective_profile,
+    FileFacts, Probe, Profile, SkipReason, build_context, parse_probe, resolve_effective_profile,
 };
 use async_trait::async_trait;
 use thiserror::Error;
@@ -92,16 +91,31 @@ impl<S: StateStore, Q: JobPublisher, P: Prober> Reconciler<S, Q, P> {
         library: &Library,
         profile: &Profile,
     ) -> std::result::Result<ReconcileOutcome, ReconcileError> {
+        self.reconcile_file_opts(path, ver, library, profile, false)
+            .await
+    }
+
+    /// [`reconcile_file`] with an operator `force` (spec 005): bypass the change-gate and
+    /// plan with `should_skip` suppressed, so a compliant/already-handled file is transcoded.
+    pub(crate) async fn reconcile_file_opts(
+        &self,
+        path: &str,
+        ver: &str,
+        library: &Library,
+        profile: &Profile,
+        force: bool,
+    ) -> std::result::Result<ReconcileOutcome, ReconcileError> {
         // Ignore marker (spec 005 FR-016): an operator "never transcode this" — a recoverable
-        // on-disk marker beside the media. Honored before anything else, so an ignored file is
-        // never probed or planned, and it survives a KV wipe (unlike a KV status).
+        // on-disk marker beside the media. Honored before anything else (even force — clear the
+        // marker to un-ignore), so an ignored file is never probed and survives a KV wipe.
         if has_ignore_marker(std::path::Path::new(path)) {
             tracing::Span::current().record("outcome", "ignored");
             return Ok(ReconcileOutcome::Skipped);
         }
 
-        // Gate: unchanged & already handled → no probe, no-op.
-        if let Some((st, _)) = self.store.get(path).await?
+        // Gate: unchanged & already handled → no probe, no-op. Force bypasses it.
+        if !force
+            && let Some((st, _)) = self.store.get(path).await?
             && st.version == ver
             && is_handled(st.status)
         {
@@ -154,7 +168,12 @@ impl<S: StateStore, Q: JobPublisher, P: Prober> Reconciler<S, Q, P> {
                 }
             }
         };
-        let file_plan = plan(path, &probe, &effective);
+        let file_plan = apsis_engine::plan_with(
+            path,
+            &probe,
+            &effective,
+            &apsis_engine::PlanOptions { force },
+        );
 
         if file_plan.should_skip {
             // Persist the positive skip decision (spec 005 FR-011) so "why skipped" is
@@ -186,6 +205,60 @@ impl<S: StateStore, Q: JobPublisher, P: Prober> Reconciler<S, Q, P> {
         tracing::Span::current().record("outcome", "enqueued");
         tracing::info!(job_id = %job.id, "enqueued transcode job");
         Ok(ReconcileOutcome::Enqueued)
+    }
+
+    /// Execute an operator state-control op (spec 005 T014). The caller serializes this with
+    /// the reconcile loop (FR-015). Returns the [`StateOutcome`] to reply with.
+    pub(crate) async fn apply_state_op(
+        &self,
+        req: &apsis_common::control::StateControlRequest,
+        cfg: &apsis_common::config::SchedulerConfig,
+    ) -> apsis_common::control::StateOutcome {
+        use apsis_common::control::{StateOp, StateOutcome};
+        let p = std::path::Path::new(&req.path);
+        match req.op {
+            // Clear the entry → the change-gate misses → the next reconcile re-plans.
+            StateOp::Requeue | StateOp::Retry => match self.store.get(&req.path).await {
+                Ok(Some(_)) => match self.store.delete(&req.path).await {
+                    Ok(()) => StateOutcome::Applied,
+                    Err(_) => StateOutcome::Noop,
+                },
+                Ok(None) => StateOutcome::NotFound,
+                Err(_) => StateOutcome::Noop,
+            },
+            StateOp::MarkDone => {
+                let Ok(ver) = apsis_common::version_token(p) else {
+                    return StateOutcome::NotFound; // file missing
+                };
+                match self
+                    .store
+                    .put(&req.path, &entry(Status::Done, &ver, None))
+                    .await
+                {
+                    Ok(_) => StateOutcome::Applied,
+                    Err(_) => StateOutcome::Noop,
+                }
+            }
+            StateOp::Force => {
+                let Ok(ver) = apsis_common::version_token(p) else {
+                    return StateOutcome::NotFound;
+                };
+                let Some(library) = crate::profile_match::match_library(&cfg.libraries, &req.path)
+                else {
+                    return StateOutcome::NotFound;
+                };
+                let Some(profile) = cfg.profiles.get(&library.profile) else {
+                    return StateOutcome::NotFound;
+                };
+                match self
+                    .reconcile_file_opts(&req.path, &ver, library, profile, true)
+                    .await
+                {
+                    Ok(ReconcileOutcome::Enqueued) => StateOutcome::Applied,
+                    Ok(_) | Err(_) => StateOutcome::Noop,
+                }
+            }
+        }
     }
 
     /// CAS the state to `Pending` at `ver` (create if absent). `false` = lost race.

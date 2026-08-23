@@ -108,16 +108,30 @@ async fn serve() -> Result<(), Fatal> {
         }
     }
 
-    let reconciler = Reconciler {
+    let reconciler = std::sync::Arc::new(Reconciler {
         store,
         publisher: NatsPublisher::new(ctx),
         prober: FfprobeProber {
             ffprobe: ffprobe.into(),
         },
-    };
+    });
+    let cfg = std::sync::Arc::new(cfg);
+
+    // A single lock serializes the reconcile pass with operator state-control ops
+    // (spec 005 FR-015), so a control write never races reconcile's unconditional put().
+    let recon_lock = std::sync::Arc::new(tokio::sync::Mutex::new(()));
+    tokio::spawn(serve_state_control(
+        client,
+        reconciler.clone(),
+        cfg.clone(),
+        recon_lock.clone(),
+    ));
 
     loop {
-        reconcile_all(&reconciler, &cfg).await;
+        {
+            let _g = recon_lock.lock().await;
+            reconcile_all(reconciler.as_ref(), cfg.as_ref()).await;
+        }
         tokio::time::sleep(cfg.reconcile.scan_interval).await;
     }
 }
@@ -243,6 +257,54 @@ async fn consume_pause_control(client: async_nats::Client, store: KvStateStore) 
         tracing::info!(?intent.scope, ?intent.mode, set = intent.set, "pause intent applied");
     }
     tracing::warn!("control.pause subscription ended");
+}
+
+/// Serve operator state-control ops (spec 005 US3/T014): requeue/retry/mark-done/force over
+/// `apsis.control.state` (request/reply). Each op runs under `recon_lock` so it is serialized
+/// with the reconcile pass (FR-015 — no KV clobber). A subscribe error is logged, not fatal.
+async fn serve_state_control(
+    client: async_nats::Client,
+    reconciler: std::sync::Arc<Coordinator>,
+    cfg: std::sync::Arc<SchedulerConfig>,
+    recon_lock: std::sync::Arc<tokio::sync::Mutex<()>>,
+) {
+    use apsis_common::control::{
+        SUBJECT_CONTROL_STATE, StateControlReply, StateControlRequest, StateOp,
+    };
+    let mut sub = match client.subscribe(SUBJECT_CONTROL_STATE).await {
+        Ok(s) => s,
+        Err(e) => {
+            tracing::error!(error = %e, "could not subscribe to control.state");
+            return;
+        }
+    };
+    while let Some(msg) = sub.next().await {
+        let Some(reply_to) = msg.reply.clone() else {
+            continue; // request/reply only
+        };
+        let Ok(req) = serde_json::from_slice::<StateControlRequest>(&msg.payload) else {
+            continue;
+        };
+        let outcome = {
+            let _g = recon_lock.lock().await;
+            reconciler.apply_state_op(&req, &cfg).await
+        };
+        let op = match req.op {
+            StateOp::Requeue => "requeue",
+            StateOp::Retry => "retry",
+            StateOp::MarkDone => "mark_done",
+            StateOp::Force => "force",
+        };
+        if let Ok(bytes) = serde_json::to_vec(&StateControlReply {
+            outcome,
+            detail: None,
+        }) {
+            let _ = client.publish(reply_to, bytes.into()).await;
+        }
+        metrics::counter!("apsis_control_ops_total", "op" => op).increment(1);
+        tracing::info!(op, path = %req.path, ?outcome, "state control op");
+    }
+    tracing::warn!("control.state subscription ended");
 }
 
 /// Reconcile passes are fast (a filesystem walk + probes of only what changed);
