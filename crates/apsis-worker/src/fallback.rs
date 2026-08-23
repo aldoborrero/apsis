@@ -6,7 +6,7 @@ use std::time::Duration;
 
 use apsis_engine::{Backend, FilePlan, Profile};
 
-use crate::run::{RunError, RunOutcome, run};
+use crate::run::{ProgressTick, RunError, RunOutcome, run};
 
 pub(crate) struct Transcoded {
     pub outcome: RunOutcome,
@@ -27,8 +27,9 @@ pub(crate) async fn transcode(
     profile: &Profile,
     stall_timeout: Duration,
     cancel: &tokio::sync::Notify,
+    progress: Option<&tokio::sync::mpsc::UnboundedSender<ProgressTick>>,
 ) -> Result<Transcoded, RunError> {
-    let first = run(primary, plan, profile, stall_timeout, cancel).await?;
+    let first = run(primary, plan, profile, stall_timeout, cancel, progress).await?;
     // An operator cancel is terminal — do NOT fall back to CPU (the operator wants it
     // stopped, not retried elsewhere). Same if the primary succeeded or there is none.
     let Some(fallback) = fallback else {
@@ -45,7 +46,7 @@ pub(crate) async fn transcode(
     }
     // Primary failed (non-zero exit or stall) → drop its temp, retry on fallback.
     let _ = std::fs::remove_file(&first.temp);
-    let second = run(fallback, plan, profile, stall_timeout, cancel).await?;
+    let second = run(fallback, plan, profile, stall_timeout, cancel, progress).await?;
     Ok(Transcoded {
         outcome: second,
         used_fallback: true,
@@ -103,6 +104,7 @@ mod tests {
             &profile,
             Duration::from_secs(30),
             &tokio::sync::Notify::new(),
+            None,
         )
         .await
         .unwrap();
@@ -138,6 +140,7 @@ mod tests {
             &profile,
             Duration::from_secs(30),
             &tokio::sync::Notify::new(),
+            None,
         )
         .await
         .unwrap();

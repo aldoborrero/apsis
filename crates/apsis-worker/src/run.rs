@@ -33,6 +33,14 @@ pub(crate) struct RunOutcome {
     pub stderr_tail: String,
 }
 
+/// One parsed `-progress` block from ffmpeg (spec 005 T010). `eta` is not computed —
+/// the source duration isn't carried by the probe yet.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct ProgressTick {
+    pub speed: f64,
+    pub out_time_s: f64,
+}
+
 /// A temp path `.apsis-tmp-<ulid>.<ext>` in the same directory as `output`.
 pub(crate) fn temp_path(output: &Path) -> PathBuf {
     let dir = output.parent().unwrap_or_else(|| Path::new("."));
@@ -75,6 +83,7 @@ pub(crate) async fn run(
     profile: &Profile,
     stall_timeout: Duration,
     cancel: &tokio::sync::Notify,
+    progress: Option<&tokio::sync::mpsc::UnboundedSender<ProgressTick>>,
 ) -> Result<RunOutcome, RunError> {
     let output = PathBuf::from(&plan.output.output_path);
     let temp = temp_path(&output);
@@ -91,7 +100,7 @@ pub(crate) async fn run(
     let stderr = child.stderr.take().expect("stderr piped");
     let stderr_task = tokio::spawn(read_tail(stderr, 4096));
 
-    let end = match wait_with_stall(&mut child, stall_timeout, cancel).await {
+    let end = match wait_with_stall(&mut child, stall_timeout, cancel, progress).await {
         Ok(end) => end,
         Err(e) => {
             stderr_task.abort(); // don't leak the drain task on the error path
@@ -137,9 +146,12 @@ async fn wait_with_stall(
     child: &mut tokio::process::Child,
     stall_timeout: Duration,
     cancel: &tokio::sync::Notify,
+    progress: Option<&tokio::sync::mpsc::UnboundedSender<ProgressTick>>,
 ) -> io::Result<RunEnd> {
     let stdout = child.stdout.take().expect("stdout piped");
     let mut lines = BufReader::new(stdout).lines();
+    // Accumulate `key=value` progress lines until a `progress=` boundary, then emit a tick.
+    let (mut speed, mut out_time_s) = (0.0f64, 0.0f64);
     loop {
         // Read the next progress line, but also wake on a cancel: killing the child
         // (not dropping this future) preserves the "process must not be dropped mid-run"
@@ -168,11 +180,45 @@ async fn wait_with_stall(
             }
         };
         match line {
-            Ok(Some(_)) => {}           // progress tick → keep watching
+            Ok(Some(l)) => {
+                if let Some(tx) = progress {
+                    parse_progress_line(&l, &mut speed, &mut out_time_s, tx);
+                }
+            }
             Ok(None) | Err(_) => break, // stdout closed → process finishing
         }
     }
     Ok(RunEnd::Exited(child.wait().await?))
+}
+
+/// Fold one ffmpeg `-progress` `key=value` line into the running `speed`/`out_time`, and on a
+/// `progress=` boundary emit a [`ProgressTick`] (spec 005 T010). Send errors (no receiver)
+/// are ignored — progress is fire-and-forget.
+fn parse_progress_line(
+    line: &str,
+    speed: &mut f64,
+    out_time_s: &mut f64,
+    tx: &tokio::sync::mpsc::UnboundedSender<ProgressTick>,
+) {
+    let Some((key, val)) = line.split_once('=') else {
+        return;
+    };
+    match key {
+        "speed" => *speed = val.trim().trim_end_matches('x').parse().unwrap_or(*speed),
+        "out_time_us" | "out_time_ms" => {
+            // ffmpeg's `out_time_ms` is actually microseconds (historical misnomer).
+            if let Ok(us) = val.trim().parse::<f64>() {
+                *out_time_s = us / 1_000_000.0;
+            }
+        }
+        "progress" => {
+            let _ = tx.send(ProgressTick {
+                speed: *speed,
+                out_time_s: *out_time_s,
+            });
+        }
+        _ => {}
+    }
 }
 
 /// Read a stream, keeping only the last `cap` bytes (a UTF-8-lossy tail).
@@ -204,6 +250,20 @@ mod tests {
         };
         let p = plan(input, &src, &profile);
         (p, profile)
+    }
+
+    #[test]
+    fn progress_lines_emit_a_tick_at_the_boundary() {
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let (mut speed, mut out) = (0.0, 0.0);
+        // Mid-block updates accumulate; only `progress=` emits.
+        parse_progress_line("speed=1.5x", &mut speed, &mut out, &tx);
+        parse_progress_line("out_time_us=5000000", &mut speed, &mut out, &tx);
+        assert!(rx.try_recv().is_err(), "no tick before the boundary");
+        parse_progress_line("progress=continue", &mut speed, &mut out, &tx);
+        let t = rx.try_recv().expect("a tick at the boundary");
+        assert!((t.speed - 1.5).abs() < f64::EPSILON);
+        assert!((t.out_time_s - 5.0).abs() < f64::EPSILON);
     }
 
     #[test]
@@ -257,6 +317,7 @@ mod tests {
             &profile,
             Duration::from_secs(30),
             &tokio::sync::Notify::new(),
+            None,
         )
         .await
         .unwrap();
@@ -282,6 +343,7 @@ mod tests {
             &mut child,
             Duration::from_millis(300),
             &tokio::sync::Notify::new(),
+            None,
         )
         .await
         .unwrap();
@@ -308,7 +370,7 @@ mod tests {
         });
         let start = std::time::Instant::now();
         // stall disabled (0) → only the cancel can end it.
-        let end = wait_with_stall(&mut child, Duration::ZERO, &cancel)
+        let end = wait_with_stall(&mut child, Duration::ZERO, &cancel, None)
             .await
             .unwrap();
         assert!(matches!(end, RunEnd::Cancelled));
@@ -332,6 +394,7 @@ mod tests {
             &mut child,
             Duration::from_millis(500),
             &tokio::sync::Notify::new(),
+            None,
         )
         .await
         .unwrap();

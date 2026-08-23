@@ -46,10 +46,12 @@ file in the chosen state.
   `main`), targets the `running` registry, replies `Cancelled`/`NotRunning`; `process` applies
   the disposition (defer → `kv.delete`; ignore → on-disk marker) and drains (ack, never nak),
   no `Failed`/result. `KvStateStore::delete`. `apsis_control_ops_total{op=cancel}`.
-- [ ] T009 [US2] `apsis-worker`: wire **hard pause** (FR-002) to trigger a defer-cancel of the
-  in-flight job.
-- [ ] T010 [US2] `apsis-worker`: publish `ProgressEvent {speed,eta,out_time}` to
-  `apsis.progress.<job_id>` from the ffmpeg `-progress` parser (no percent).
+- [x] T009 [US2] `worker.rs`: the heartbeat loop checks `effective_pause()` each tick and on
+  `Hard` fires `cancel_running()` (defer) — a hard pause aborts the in-flight transcode (FR-002).
+- [x] T010 [US2] `run.rs`/`worker.rs`: `wait_with_stall` parses the ffmpeg `-progress` blocks
+  (`speed`/`out_time_us`) and emits `ProgressTick`s over a channel; `process` publishes each as a
+  `ProgressEvent` to `apsis.progress.<job_id>` (ephemeral, no percent). Test:
+  `progress_lines_emit_a_tick_at_the_boundary`.
 - [x] T011 [US2] Integration test `cancel_active_transcode_leaves_source_intact` (gated,
   NATS-backed): cancel via request/reply → reply `Cancelled`, **source byte-identical**, defer
   clears the KV, no redelivery. **Verified green against a live `nats-server -js`.**

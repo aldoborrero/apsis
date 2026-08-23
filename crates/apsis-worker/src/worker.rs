@@ -250,6 +250,28 @@ impl Worker {
             cancel: cancel.clone(),
             disposition: disposition.clone(),
         });
+
+        // Live progress (spec 005 T010): a task drains parsed ffmpeg progress ticks and
+        // publishes each to `apsis.progress.<job_id>` (ephemeral, fire-and-forget). The
+        // task ends when `ptx` drops at the end of this call.
+        let (ptx, mut prx) = tokio::sync::mpsc::unbounded_channel::<crate::run::ProgressTick>();
+        let prog_client = self.client.clone();
+        let prog_jid = job.id.to_string();
+        tokio::spawn(async move {
+            while let Some(t) = prx.recv().await {
+                let ev = apsis_common::control::ProgressEvent {
+                    job_id: prog_jid.clone(),
+                    speed: t.speed,
+                    eta_s: 0,
+                    out_time_s: t.out_time_s,
+                };
+                if let Ok(bytes) = serde_json::to_vec(&ev) {
+                    let subj = apsis_common::control::subject_progress(&prog_jid);
+                    let _ = prog_client.publish(subj, bytes.into()).await;
+                }
+            }
+        });
+
         let t = transcode(
             self.primary.as_ref(),
             self.fallback.as_deref(),
@@ -257,9 +279,11 @@ impl Worker {
             &job.profile_config,
             self.stall_timeout,
             &cancel,
+            Some(&ptx),
         )
         .await;
         *self.running.lock().expect("registry lock") = None;
+        drop(ptx); // end the progress task
         let t = t?;
 
         // Operator cancel: apply the disposition (defer → clear KV so the next reconcile
