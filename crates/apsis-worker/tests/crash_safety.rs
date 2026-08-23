@@ -300,3 +300,66 @@ async fn poison_job_dead_letters_after_max_deliver() {
 
     std::fs::remove_dir_all(&dir).ok();
 }
+
+/// US1 (spec 005): a paused worker claims nothing while paused, then resumes on clear.
+#[tokio::test]
+async fn paused_worker_claims_nothing_then_resumes() {
+    let _guard = topology_lock().lock().await;
+    if !ffmpeg_available() {
+        eprintln!("skipping: ffmpeg not on PATH");
+        return;
+    }
+    let url = nats_url();
+    let Ok(Ok((_client, ctx))) = timeout(Duration::from_secs(2), connect(&url)).await else {
+        eprintln!("skipping: no nats-server at {url} (run `process-compose up`)");
+        return;
+    };
+    let tuning = test_tuning();
+    let kv = KvStateStore::new(reset_topology(&ctx, &tuning).await);
+
+    let dir = std::env::temp_dir().join(format!("apsis-pause-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let src = sample_h264(&dir, "clip.mkv", 2, "128x128");
+    let cfg = dir.join("worker.toml");
+    std::fs::write(
+        &cfg,
+        "concurrency = 1\n[[backend]]\nkind = \"cpu\"\n\
+         [consumer]\nack_wait = \"5s\"\nmax_deliver = 3\nbackoff = []\n",
+    )
+    .unwrap();
+
+    // Pause globally BEFORE the worker starts, then publish a job.
+    kv.put_pause(&apsis_common::control::PauseState {
+        global: Some(apsis_common::control::PauseMode::Soft),
+        ..Default::default()
+    })
+    .await
+    .expect("set pause");
+    let job = hevc_job(src.to_str().unwrap());
+    NatsPublisher::new(ctx.clone())
+        .publish(&job)
+        .await
+        .expect("publish job");
+
+    let mut w = spawn_worker(&cfg, &url, 19_314, false);
+
+    // While paused (≥3 gate cycles of 2s), the job is NOT claimed — no KV entry appears.
+    sleep(Duration::from_secs(7)).await;
+    assert!(
+        matches!(kv.get(&job.path).await, Ok(None)),
+        "paused worker must not claim the job (queue stays intact)"
+    );
+
+    // Clear the pause → the worker resumes and drives the job to Done.
+    kv.put_pause(&apsis_common::control::PauseState::default())
+        .await
+        .expect("clear pause");
+    let done = wait_status(&kv, &job.path, Status::Done, Duration::from_secs(90)).await;
+    assert!(
+        done.is_some(),
+        "worker did not resume after the pause cleared"
+    );
+
+    w.start_kill().ok();
+    std::fs::remove_dir_all(&dir).ok();
+}

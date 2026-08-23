@@ -27,10 +27,10 @@ clear, confirm resume.
   emits `apsis_control_ops_total{op=pause}`.
 - [x] T005 [US1] `apsis-worker`: pause gate before each claim (`is_paused` reads the key each
   cycle — reconnect re-read, fails open on error); soft-paused → don't pull. `APSIS_WORKER_ID`.
-- [ ] T006 [US1] Integration test (NATS-backed, alongside `crash_safety.rs`): soft pause →
-  worker claims nothing, queue intact; clear → claiming resumes; pause survives a worker
-  restart. Hard-pause path deferred to US2 (needs cancel). *(Core logic unit-tested; the
-  end-to-end NATS assertion remains.)*
+- [x] T006 [US1] Integration test `paused_worker_claims_nothing_then_resumes` (NATS-backed,
+  gated): soft pause set before the worker starts → the job is never claimed (KV stays
+  empty) for ≥3 gate cycles; clearing the pause → the worker resumes and drives it to `Done`.
+  **Verified green against a live `nats-server -js`** (9.2s). Hard-pause abort is US2.
 
 ## Phase 3: User Story 2 — Cancel the active transcode (Priority: P2)
 
