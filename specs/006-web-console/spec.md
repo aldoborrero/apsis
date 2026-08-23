@@ -2,26 +2,25 @@
 
 **Feature Branch**: `006-web-console`
 **Created**: 2026-08-23
-**Status**: Draft — **BLOCKED on a constitution amendment (see governance gate)**
-**Input**: A thin web console that lets an operator *see* per-file state and live progress,
+**Status**: Draft — **amendment landed (constitution v3.0.0, 2026-08-24); ready to plan**
+**Input**: A reactive web console that lets an operator *see* per-file state and live progress,
 *understand* why a file was skipped/transcoded, and *act* (pause, cancel the active
-transcode, re-queue/force/retry/mark) — as a browser skin over the spec 005 NATS control &
+transcode, re-queue/force/retry/mark) — a **Leptos** front end over the spec 005 NATS control &
 introspection protocol.
 
-## Constitution alignment *(read first — governance gate)* — REQUIRES AMENDMENT
+## Constitution alignment *(read first — governance gate)* — AMENDMENT LANDED (v3.0.0)
 
-This is the artifact the constitution deliberately excludes. **Principle V** states apsis
-ships *"no bespoke UI"* and pushes observability to *"Prometheus … viewed in Grafana"*;
-**design decision D5** is *"No web UI — observability via Grafana + VictoriaMetrics + logs"*.
-A web console **cannot be built until those are amended.**
+This was the artifact the constitution deliberately excluded. As of **constitution v3.0.0**
+(2026-08-24) that stance is amended, **bounded**: Principle V now permits a single read-mostly
+operator console, Principle II and Observability & Operations are updated in step, and design
+decision **D5** is superseded. The bounded console is therefore now **permitted** — this spec
+may proceed to `/plan`.
 
-**Required governance action (a prerequisite task, not optional):** amend the constitution
-(bump the version, update the amendment log) and reflect it in `docs/design/rust-scheduler.md`
-D5, from *"no bespoke UI"* to the carve-out below. This is a **larger** widening than a thin
-skin: the console is a **Leptos full-stack reactive app** (SSR + WASM hydration + a
-`cargo-leptos` build pipeline), so the amendment deliberately relaxes "thin" for the operator
-console specifically — accepting a compiled WASM frontend and a build step in exchange for a
-real interactive UI.
+**Governance action (LANDED 2026-08-24):** the constitution was amended to v3.0.0 (version +
+amendment log) and reflected in `docs/design/rust-scheduler.md` D5. It relaxes "thin" for the
+console specifically — the console is a **Leptos full-stack reactive app** (SSR + WASM
+hydration + a `cargo-leptos` build pipeline), accepting a compiled WASM frontend and a build
+step in exchange for a real interactive UI. The landed carve-out:
 
 > A **reactive operator console** is permitted, built with Leptos (full-stack Rust: SSR +
 > client-side hydration). It reads only the spec 005 NATS surface (KV state/decision + the
@@ -34,9 +33,8 @@ real interactive UI.
 > plugins stays prohibited. Still prohibited: config editing in the UI, a visual graph/editor,
 > a dynamic-ABI/WASM plugin host.
 
-If the amendment is rejected, this spec is closed and the control protocol (spec 005)
-remains fully usable via the `nats` CLI + Grafana. **Do not implement 006 before the
-amendment lands.**
+The invariants above are the review checklist for every 006 change. The control protocol
+(spec 005) remains fully usable via the `nats` CLI + Grafana regardless of the console.
 
 ## User Scenarios & Testing *(mandatory)*
 

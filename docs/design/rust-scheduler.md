@@ -23,7 +23,7 @@ Unmanic plugin `pyflows_transcode` becomes `apsis_transcode` at cutover.
 | D2 | **Keep Unmanic + `pyflows_transcode` in prod for now** | works today; build only when its friction is worth the port |
 | D3 | **Transport = NATS JetStream; media = shared NFS** | jobs carry only metadata — no file transfer (Unmanic's shared-path mode, validated in Appendix A) |
 | D4 | **~~No runtime plugin system~~ → Bounded declarative extensibility** (amended 2026-08-18, constitution v2.0.0) | superseded: a pure config-expression language (CEL) for profile conditions + two versioned, replaceable seams (planner, hooks) with defaults — still **no** visual graph/editor, bespoke UI, or dynamic-ABI/WASM host; single-pass + portability + "thin" preserved. See spec `004-rich-profiles-cel` |
-| D5 | **No web UI** — observability via Grafana + VictoriaMetrics + logs | deletes Unmanic's biggest subsystem |
+| D5 | **~~No web UI~~ → bounded operator console** (amended 2026-08-24, constitution v3.0.0) | superseded: aggregate/historical observability stays in Grafana + VictoriaMetrics + logs, but a single **read-mostly** console (Leptos full-stack) is permitted for per-file live state, decisions, and the spec 005 control intents (pause/cancel/requeue/force/…). Reads only the spec 005 NATS surface, mutates only via its control subjects — no privileged backdoor, no config editing, no visual graph/editor. See spec `006-web-console` |
 | D6 | **Reuse the engine** (`_engine` → `apsis-engine` port); build only the orchestration | the transcode brain is already ours |
 
 ---
