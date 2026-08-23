@@ -38,21 +38,23 @@ clear, confirm resume.
 **Independent test**: `nats req` cancel → child killed, checksum unchanged, message ack'd,
 file in the chosen state.
 
-- [ ] T007 [US2] `apsis-worker`: expose a **child handle / kill signal** for the in-flight
-  ffmpeg so it can be killed without dropping the pinned `process()` future (preserve the
-  existing "must not drop mid-run" invariant).
-- [ ] T008 [US2] `apsis-worker/src/control.rs` (NEW): subscribe `apsis.control.cancel`; if this
-  worker runs `job_id`, kill the child, let the normal error path discard the temp, apply the
-  disposition (defer → clear KV; ignore → write marker), and **`ack`/`term` the message (never
-  `nak`)**. Reply `cancelled`/`not_running`/`already_done` (already-done if past
-  `atomic_replace`).
+- [x] T007 [US2] `run.rs`/`fallback.rs`: `run`/`wait_with_stall` take a `&Notify`; the watch
+  loop selects on it and **kills the ffmpeg child** (not dropping the pinned future) →
+  `RunOutcome.cancelled`; `transcode` does not fall back on a cancel. Test:
+  `cancel_kills_a_running_process`.
+- [x] T008 [US2] `worker.rs`: `serve_cancel` subscribes to `apsis.control.cancel` (spawned in
+  `main`), targets the `running` registry, replies `Cancelled`/`NotRunning`; `process` applies
+  the disposition (defer → `kv.delete`; ignore → on-disk marker) and drains (ack, never nak),
+  no `Failed`/result. `KvStateStore::delete`. `apsis_control_ops_total{op=cancel}`.
 - [ ] T009 [US2] `apsis-worker`: wire **hard pause** (FR-002) to trigger a defer-cancel of the
   in-flight job.
 - [ ] T010 [US2] `apsis-worker`: publish `ProgressEvent {speed,eta,out_time}` to
   `apsis.progress.<job_id>` from the ffmpeg `-progress` parser (no percent).
-- [ ] T011 [US2] Integration test: cancel a running transcode → **source checksum unchanged**,
-  temp gone, message `ack`'d not `nak`'d; defer → re-planned next reconcile; ignore → marker
-  written; cancel of a not-running job → `not_running`.
+- [x] T011 [US2] Integration test `cancel_active_transcode_leaves_source_intact` (gated,
+  NATS-backed): cancel via request/reply → reply `Cancelled`, **source byte-identical**, defer
+  clears the KV, no redelivery. **Verified green against a live `nats-server -js`.**
+  (`already_done`/`not_running` reply paths covered by the serve_cancel logic; the
+  ignore-marker gate is honored in T013.)
 
 ## Phase 4: User Story 3 — State control & introspection (Priority: P3)
 

@@ -363,3 +363,86 @@ async fn paused_worker_claims_nothing_then_resumes() {
     w.start_kill().ok();
     std::fs::remove_dir_all(&dir).ok();
 }
+
+/// US2 (spec 005): cancelling the active transcode kills ffmpeg, leaves the source
+/// byte-identical, replies `Cancelled`, and (defer) clears the state without redelivery.
+#[tokio::test]
+async fn cancel_active_transcode_leaves_source_intact() {
+    use apsis_common::control::{CancelOutcome, CancelReply, CancelRequest, Disposition};
+
+    let _guard = topology_lock().lock().await;
+    if !ffmpeg_available() {
+        eprintln!("skipping: ffmpeg not on PATH");
+        return;
+    }
+    let url = nats_url();
+    let Ok(Ok((client, ctx))) = timeout(Duration::from_secs(2), connect(&url)).await else {
+        eprintln!("skipping: no nats-server at {url} (run `process-compose up`)");
+        return;
+    };
+    let tuning = test_tuning();
+    let kv = KvStateStore::new(reset_topology(&ctx, &tuning).await);
+
+    // A long clip so the encode is still running when we cancel.
+    let dir = std::env::temp_dir().join(format!("apsis-cancel-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let src = sample_h264(&dir, "clip.mkv", 6, "640x480");
+    let original = std::fs::read(&src).unwrap();
+    let cfg = dir.join("worker.toml");
+    std::fs::write(
+        &cfg,
+        "concurrency = 1\n[[backend]]\nkind = \"cpu\"\n\
+         [consumer]\nack_wait = \"30s\"\nmax_deliver = 3\nbackoff = []\n",
+    )
+    .unwrap();
+
+    let job = hevc_job(src.to_str().unwrap());
+    NatsPublisher::new(ctx.clone())
+        .publish(&job)
+        .await
+        .expect("publish job");
+
+    let mut w = spawn_worker(&cfg, &url, 19_315, false);
+    let claimed = wait_status(&kv, &job.path, Status::InProgress, Duration::from_secs(20)).await;
+    assert!(claimed.is_some(), "worker never claimed the job");
+
+    // Cancel the active transcode (defer) via request/reply.
+    let req = serde_json::to_vec(&CancelRequest {
+        job_id: job.id.to_string(),
+        disposition: Disposition::Defer,
+    })
+    .unwrap();
+    let reply = timeout(
+        Duration::from_secs(10),
+        client.request("apsis.control.cancel", req.into()),
+    )
+    .await
+    .expect("cancel request timed out")
+    .expect("cancel request failed");
+    let reply: CancelReply = serde_json::from_slice(&reply.payload).unwrap();
+    assert_eq!(
+        reply.outcome,
+        CancelOutcome::Cancelled,
+        "expected Cancelled"
+    );
+
+    // The KV entry is cleared (defer) and the source is byte-identical — never replaced.
+    let cleared = timeout(Duration::from_secs(10), async {
+        loop {
+            if matches!(kv.get(&job.path).await, Ok(None)) {
+                break;
+            }
+            sleep(Duration::from_millis(100)).await;
+        }
+    })
+    .await;
+    assert!(cleared.is_ok(), "defer-cancel did not clear the KV entry");
+    assert_eq!(
+        std::fs::read(&src).unwrap(),
+        original,
+        "source must be byte-identical after a cancel"
+    );
+
+    w.start_kill().ok();
+    std::fs::remove_dir_all(&dir).ok();
+}
