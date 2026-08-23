@@ -47,9 +47,9 @@ the queue or corrupting anything.
 **Why this priority**: the most-requested, highest-value, lowest-risk control. Pausing is
 purely additive (a gate the worker consults) and touches no media.
 
-**Independent Test**: set the pause control while a job runs; confirm no *new* job is
-claimed while paused and the queue is intact; clear it and confirm claiming resumes — all
-via `nats kv`.
+**Independent Test**: publish the pause intent (a `nats` control subject) while a job runs;
+confirm — by reading the KV — that no *new* job is claimed while paused and the queue is
+intact; clear it and confirm claiming resumes.
 
 **Acceptance Scenarios**:
 

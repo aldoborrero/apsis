@@ -49,18 +49,18 @@ progress subject — no new backend beyond spec 005.
 **Acceptance Scenarios**:
 
 1. **Given** files in various states, **When** the operator opens the console, **Then** it
-   lists each with its status (Done / Pending / InProgress / Failed / Skipped) read from the
-   KV.
+   lists each with its status (Done / Pending / InProgress / Failed) read from the KV, plus
+   an "ignored" indicator for any file carrying the on-disk ignore marker (spec 005 FR-016).
 2. **Given** a running transcode, **When** the operator watches, **Then** its progress
    updates live (server-sent events off the spec 005 progress subject) without a refresh.
 
 ### User Story 2 - Understand a decision (Priority: P2)
 
 **Why this priority**: the strongest reason a UI beats Grafana — "why did apsis skip/encode
-this?" — surfacing the decision the coordinator already persisted (spec 005 FR-010).
+this?" — surfacing the decision the coordinator already persisted (spec 005 FR-011).
 
-**Independent Test**: click a skipped file; the console shows its decision (`reasons`,
-which rule/gate applied) read from the KV entry; no re-probe.
+**Independent Test**: click a skipped file; the console shows its decision (the positive
+skip reason — which gate/compliant codec applied) read from the KV entry; no re-probe.
 
 **Acceptance Scenarios**:
 
@@ -80,8 +80,8 @@ resulting state change; behaviour is identical to issuing it from `nats`.
 
 **Acceptance Scenarios**:
 
-1. **Given** the console, **When** the operator clicks Pause, **Then** it sets the spec 005
-   pause key and the UI shows the paused state (surviving restart).
+1. **Given** the console, **When** the operator clicks Pause, **Then** it publishes the spec
+   005 pause intent (a control subject) and the UI shows the paused state (surviving restart).
 2. **Given** a running transcode, **When** the operator clicks Cancel and picks a
    disposition, **Then** it sends the spec 005 cancel request and shows the outcome.
 3. **Given** any control action, **When** the owner is down, **Then** the console surfaces
