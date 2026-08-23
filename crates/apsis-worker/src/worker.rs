@@ -201,12 +201,17 @@ impl Worker {
         plan.output.output_path.clone_from(&local_out);
         let in_bytes = std::fs::metadata(&local_in).map_or(0, |m| m.len());
 
+        // Cancellation (spec 005 US2): the transcode is interruptible via this Notify.
+        // T008 registers it so the control subscriber can fire it; until then it is
+        // never fired (behavior unchanged).
+        let cancel = std::sync::Arc::new(tokio::sync::Notify::new());
         let t = transcode(
             self.primary.as_ref(),
             self.fallback.as_deref(),
             &plan,
             &job.profile_config,
             self.stall_timeout,
+            &cancel,
         )
         .await?;
 

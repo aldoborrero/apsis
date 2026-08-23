@@ -26,6 +26,9 @@ pub(crate) enum RunError {
 pub(crate) struct RunOutcome {
     pub temp: PathBuf,
     pub success: bool,
+    /// The child was killed by an operator cancel (spec 005 US2) — distinct from a
+    /// plain failure so the caller does NOT fall back to CPU or record `Failed`.
+    pub cancelled: bool,
     /// Last few KiB of stderr, for diagnostics on failure.
     pub stderr_tail: String,
 }
@@ -71,6 +74,7 @@ pub(crate) async fn run(
     plan: &FilePlan,
     profile: &Profile,
     stall_timeout: Duration,
+    cancel: &tokio::sync::Notify,
 ) -> Result<RunOutcome, RunError> {
     let output = PathBuf::from(&plan.output.output_path);
     let temp = temp_path(&output);
@@ -87,7 +91,7 @@ pub(crate) async fn run(
     let stderr = child.stderr.take().expect("stderr piped");
     let stderr_task = tokio::spawn(read_tail(stderr, 4096));
 
-    let end = match wait_with_stall(&mut child, stall_timeout).await {
+    let end = match wait_with_stall(&mut child, stall_timeout, cancel).await {
         Ok(end) => end,
         Err(e) => {
             stderr_task.abort(); // don't leak the drain task on the error path
@@ -97,16 +101,24 @@ pub(crate) async fn run(
     };
     let stderr_tail = stderr_task.await.unwrap_or_default();
 
-    let (success, stderr_tail) = match end {
-        RunEnd::Exited(status) => (status.success(), stderr_tail),
+    let (success, cancelled, stderr_tail) = match end {
+        RunEnd::Exited(status) => (status.success(), false, stderr_tail),
         RunEnd::Stalled => (
+            false,
             false,
             format!("ffmpeg stalled: no progress for {stall_timeout:?}, killed\n{stderr_tail}"),
         ),
+        // An operator cancel: discard the partial temp here so a cancelled run never
+        // leaves one for verify/install (the source is only ever touched at replace).
+        RunEnd::Cancelled => {
+            let _ = std::fs::remove_file(&temp);
+            (false, true, "cancelled by operator".to_string())
+        }
     };
     Ok(RunOutcome {
         temp,
         success,
+        cancelled,
         stderr_tail,
     })
 }
@@ -114,6 +126,7 @@ pub(crate) async fn run(
 enum RunEnd {
     Exited(std::process::ExitStatus),
     Stalled,
+    Cancelled,
 }
 
 /// Wait for the child while reading its `-progress` stdout. stdout EOF signals the
@@ -123,20 +136,35 @@ enum RunEnd {
 async fn wait_with_stall(
     child: &mut tokio::process::Child,
     stall_timeout: Duration,
+    cancel: &tokio::sync::Notify,
 ) -> io::Result<RunEnd> {
     let stdout = child.stdout.take().expect("stdout piped");
     let mut lines = BufReader::new(stdout).lines();
     loop {
-        let line = if stall_timeout.is_zero() {
-            lines.next_line().await
-        } else {
-            match tokio::time::timeout(stall_timeout, lines.next_line()).await {
-                Ok(res) => res,
-                Err(_elapsed) => {
-                    let _ = child.start_kill();
-                    let _ = child.wait().await;
-                    return Ok(RunEnd::Stalled);
-                }
+        // Read the next progress line, but also wake on a cancel: killing the child
+        // (not dropping this future) preserves the "process must not be dropped mid-run"
+        // invariant — the normal cleanup below still runs (spec 005 FR-006/008).
+        let read = async {
+            if stall_timeout.is_zero() {
+                Ok(lines.next_line().await)
+            } else {
+                tokio::time::timeout(stall_timeout, lines.next_line()).await
+            }
+        };
+        let line = tokio::select! {
+            res = read => res,
+            () = cancel.notified() => {
+                let _ = child.start_kill();
+                let _ = child.wait().await;
+                return Ok(RunEnd::Cancelled);
+            }
+        };
+        let line = match line {
+            Ok(res) => res,
+            Err(_elapsed) => {
+                let _ = child.start_kill();
+                let _ = child.wait().await;
+                return Ok(RunEnd::Stalled);
             }
         };
         match line {
@@ -223,10 +251,17 @@ mod tests {
         let cpu = CpuBackend {
             ffmpeg_path: "ffmpeg".into(),
         };
-        let out = run(&cpu, &p, &profile, Duration::from_secs(30))
-            .await
-            .unwrap();
+        let out = run(
+            &cpu,
+            &p,
+            &profile,
+            Duration::from_secs(30),
+            &tokio::sync::Notify::new(),
+        )
+        .await
+        .unwrap();
         assert!(out.success, "transcode failed: {}", out.stderr_tail);
+        assert!(!out.cancelled);
         assert!(out.temp.exists(), "temp output written");
         assert!(std::fs::metadata(&out.temp).unwrap().len() > 0);
         std::fs::remove_dir_all(&dir).ok();
@@ -243,11 +278,44 @@ mod tests {
             .spawn()
             .unwrap();
         let start = std::time::Instant::now();
-        let end = wait_with_stall(&mut child, Duration::from_millis(300))
-            .await
-            .unwrap();
+        let end = wait_with_stall(
+            &mut child,
+            Duration::from_millis(300),
+            &tokio::sync::Notify::new(),
+        )
+        .await
+        .unwrap();
         assert!(matches!(end, RunEnd::Stalled));
         assert!(start.elapsed() < Duration::from_secs(5), "killed promptly");
+    }
+
+    #[tokio::test]
+    async fn cancel_kills_a_running_process() {
+        // A long-sleeping child (emits no progress, but stall is disabled) is killed
+        // promptly when the cancel is fired.
+        let mut child = Command::new("sleep")
+            .arg("30")
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .kill_on_drop(true)
+            .spawn()
+            .unwrap();
+        let cancel = std::sync::Arc::new(tokio::sync::Notify::new());
+        let c2 = cancel.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(200)).await;
+            c2.notify_one();
+        });
+        let start = std::time::Instant::now();
+        // stall disabled (0) → only the cancel can end it.
+        let end = wait_with_stall(&mut child, Duration::ZERO, &cancel)
+            .await
+            .unwrap();
+        assert!(matches!(end, RunEnd::Cancelled));
+        assert!(
+            start.elapsed() < Duration::from_secs(5),
+            "killed promptly on cancel"
+        );
     }
 
     #[tokio::test]
@@ -260,9 +328,13 @@ mod tests {
             .kill_on_drop(true)
             .spawn()
             .unwrap();
-        let end = wait_with_stall(&mut child, Duration::from_millis(500))
-            .await
-            .unwrap();
+        let end = wait_with_stall(
+            &mut child,
+            Duration::from_millis(500),
+            &tokio::sync::Notify::new(),
+        )
+        .await
+        .unwrap();
         assert!(matches!(end, RunEnd::Exited(s) if s.success()));
     }
 }

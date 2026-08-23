@@ -26,15 +26,18 @@ pub(crate) async fn transcode(
     plan: &FilePlan,
     profile: &Profile,
     stall_timeout: Duration,
+    cancel: &tokio::sync::Notify,
 ) -> Result<Transcoded, RunError> {
-    let first = run(primary, plan, profile, stall_timeout).await?;
+    let first = run(primary, plan, profile, stall_timeout, cancel).await?;
+    // An operator cancel is terminal — do NOT fall back to CPU (the operator wants it
+    // stopped, not retried elsewhere). Same if the primary succeeded or there is none.
     let Some(fallback) = fallback else {
         return Ok(Transcoded {
             outcome: first,
             used_fallback: false,
         });
     };
-    if first.success {
+    if first.success || first.cancelled {
         return Ok(Transcoded {
             outcome: first,
             used_fallback: false,
@@ -42,7 +45,7 @@ pub(crate) async fn transcode(
     }
     // Primary failed (non-zero exit or stall) → drop its temp, retry on fallback.
     let _ = std::fs::remove_file(&first.temp);
-    let second = run(fallback, plan, profile, stall_timeout).await?;
+    let second = run(fallback, plan, profile, stall_timeout, cancel).await?;
     Ok(Transcoded {
         outcome: second,
         used_fallback: true,
@@ -99,6 +102,7 @@ mod tests {
             &p,
             &profile,
             Duration::from_secs(30),
+            &tokio::sync::Notify::new(),
         )
         .await
         .unwrap();
@@ -127,9 +131,16 @@ mod tests {
             ffmpeg_path: "ffmpeg".into(),
         };
         // primary = CPU, no fallback configured.
-        let t = transcode(&cpu, None, &p, &profile, Duration::from_secs(30))
-            .await
-            .unwrap();
+        let t = transcode(
+            &cpu,
+            None,
+            &p,
+            &profile,
+            Duration::from_secs(30),
+            &tokio::sync::Notify::new(),
+        )
+        .await
+        .unwrap();
         assert!(!t.used_fallback);
         assert!(t.outcome.success);
         std::fs::remove_dir_all(&dir).ok();
