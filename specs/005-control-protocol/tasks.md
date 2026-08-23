@@ -81,14 +81,14 @@ decision is readable from `nats kv get`.
 
 ## Phase 5: Polish & cross-cutting
 
-- [ ] T017 [P] `contracts/control-subjects.md` → document the **NATS subject-permission ACL**
-  for operator vs daemon credentials (FR-014); note where the deployment enforces it.
-- [ ] T018 [P] `docs/apsis-operations.md`: a "Control plane" section — the `nats` CLI recipes
-  for each op (pause/cancel/requeue/force/retry/mark-done), the progress subject, and the
-  ignore marker. This is the acceptance surface (SC-003).
-- [ ] T019 Gate: `nix develop --command bash -c 'cargo fmt && cargo clippy --workspace
-  --all-targets -- -D warnings && cargo test --workspace'`; the full spec 002 crash-safety
-  suite stays green (SC-005).
+- [x] T017 [P] `contracts/control-subjects.md` documents the NATS subject-permission ACL
+  (operators: publish `apsis.control.*`, subscribe `apsis.progress.*`, read KV; no KV write) — FR-014.
+- [x] T018 [P] `docs/apsis-operations.md` gained a "Control plane" section — `nats` CLI recipes
+  for pause/cancel/requeue/force/retry/mark-done, the progress subject, the ignore marker, and
+  the ACL (SC-003).
+- [x] T019 Gate green: `cargo fmt && cargo clippy --workspace --all-targets -- -D warnings &&
+  cargo test --workspace`; the spec 002 crash-safety suite stays green (pause/cancel added
+  alongside it, all pass against a live nats-server).
 
 ## Dependencies
 

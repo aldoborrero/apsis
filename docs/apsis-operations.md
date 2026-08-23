@@ -198,6 +198,61 @@ each transcode runs inside a `job` span (`job_id`, `path`, `version`, `backend`,
 each reconcile inside a `reconcile` span (`path`, `version`, `outcome`), so a single job's events
 share those fields. Example: `RUST_LOG=apsis_worker=debug` for verbose worker tracing.
 
+## Control plane (spec 005)
+
+Operator control travels over NATS subjects — no web UI, no HTTP API. Everything below works
+from the `nats` CLI (in the dev shell); the daemons are the sole writers of state, so a
+control client only ever *publishes intents*. Each op increments
+`apsis_control_ops_total{op}` and is logged.
+
+**Pause / resume** — publish a pause intent; the coordinator persists it, workers watch it.
+
+```bash
+# soft pause (finish in-flight, stop taking new work), globally
+nats pub apsis.control.pause '{"scope":"global","mode":"soft","set":true}'
+# hard pause (also abort the running transcode)
+nats pub apsis.control.pause '{"scope":"global","mode":"hard","set":true}'
+# drain one host
+nats pub apsis.control.pause '{"scope":{"worker":"rhea"},"mode":"soft","set":true}'
+# resume
+nats pub apsis.control.pause '{"scope":"global","mode":"soft","set":false}'
+```
+
+**Cancel the active transcode** — request/reply; the source is left byte-identical.
+
+```bash
+# defer: re-queued next reconcile; ignore: recoverable on-disk marker, never retried
+nats req apsis.control.cancel '{"job_id":"<ulid>","disposition":"defer"}'
+# → {"outcome":"cancelled"}  (or "not_running" / "already_done")
+```
+
+**State control** — request/reply to the coordinator (serialized with reconcile):
+
+```bash
+nats req apsis.control.state '{"path":"/hdd/media/tv/x.mkv","op":"requeue"}'    # re-evaluate
+nats req apsis.control.state '{"path":"/hdd/media/tv/x.mkv","op":"force"}'      # transcode despite skip
+nats req apsis.control.state '{"path":"/hdd/media/tv/x.mkv","op":"retry"}'      # clear a Failed
+nats req apsis.control.state '{"path":"/hdd/media/tv/x.mkv","op":"mark_done"}'  # never transcode until it changes
+# → {"outcome":"applied"}  (or "not_found" / "noop")
+```
+
+**Introspection** — the per-file state (incl. the *decision*: why it was skipped) is in the
+KV; live progress is on a per-job subject.
+
+```bash
+nats kv get transcode_state /hdd/media/tv/x.mkv      # status + decision (why skipped)
+nats sub 'apsis.progress.>'                            # live {speed, eta_s, out_time_s}
+```
+
+**Ignore marker** — an *ignore* disposition writes `<file>.apsisignore` beside the media; the
+reconcile gate honors it (an ignored file is never probed) and it survives a KV wipe. Delete
+the marker to un-ignore.
+
+**Authorization**: operator NATS credentials should be scoped to **publish `apsis.control.*`,
+subscribe `apsis.progress.*`, read the KV** — no KV write, no job-stream publish (the daemons
+hold those). This makes "owners are the sole writers" enforced, not conventional. See
+[`specs/005-control-protocol/contracts/control-subjects.md`](../specs/005-control-protocol/contracts/control-subjects.md).
+
 ## Safety model (why it won't corrupt the library)
 
 - The worker writes the transcode to `.apsis-tmp-<ulid>` **beside** the source (same
