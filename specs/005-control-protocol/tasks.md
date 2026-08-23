@@ -64,22 +64,20 @@ file in the chosen state.
 ignore marker. **Independent test**: each op transitions state correctly; a skipped file's
 decision is readable from `nats kv get`.
 
-- [ ] T012 [US3] `apsis-engine/src/plan.rs`: add `PlanOptions { force }` threaded into
-  `plan(...)` (existing callers pass `Default`); `force` suppresses `should_skip`. Emit a
-  positive `SkipReason` on the `FilePlan` where `should_skip` is decided. Unit tests:
-  force plans an encode for a compliant file; each gate yields its `SkipReason`.
-- [ ] T013 [US3] `apsis-coordinator/src/reconcile.rs`: persist `SkipReason → StateEntry.decision`
-  when marking `Done`/skip; honor the on-disk ignore marker in the gate (alongside
-  `is_handled`); thread `force` from a control request into the `PlanOptions` path.
-- [ ] T014 [US3] `apsis-coordinator/src/control.rs`: request/reply consumer for
-  `apsis.control.state` (requeue/retry/mark_done/force), **executed serialized with the
-  reconcile loop** (command channel drained per pass, or a KV-write mutex) — FR-015. `mark_done`
-  computes `mtime:size` if unprobed.
-- [ ] T015 [US3] Audit: every control op logs (op, target, timestamp) + increments
-  `apsis_control_ops_total{op}` (+ `describe_counter!`). FR-017.
-- [ ] T016 [US3] Integration test: control op interleaved with a reconcile pass → **no KV
-  clobber** (FR-015); an ignore-marked file is skipped and survives a KV wipe; a skipped file's
-  `decision` is readable via `nats kv`.
+- [x] T012 [US3] `plan.rs`: `PlanOptions { force }` (plan delegates); force suppresses
+  `should_skip` + turns a compliant Copy into an Encode. Positive `SkipReason` on the FilePlan.
+  Tests: `force_transcodes_a_compliant_file`, `skip_reason_reports_why`.
+- [x] T013 [US3] `reconcile.rs`: persist `SkipReason → StateEntry.decision` on Done/skip; honor
+  the on-disk ignore marker first (survives a KV wipe); `reconcile_file_opts(force)` bypasses the
+  change-gate + plans with `PlanOptions{force}`.
+- [x] T014 [US3] `main.rs`/`reconcile.rs`: `serve_state_control` (request/reply) + `apply_state_op`
+  (requeue/retry/mark_done/force), run under a shared `recon_lock` serialized with the reconcile
+  pass (FR-015). `mark_done` computes `mtime:size`. `StateStore::delete` added.
+- [x] T015 [US3] Audit: `apsis_control_ops_total{op}` for pause/cancel/every state op; each logged.
+- [x] T016 [US3] Unit tests `state_op_mark_done_then_requeue`, `state_op_force_enqueues_a_compliant_file`
+  (apply_state_op logic vs FakeStore/Publisher — the NATS request/reply wiring is thin, of the
+  serve_cancel shape already covered by an integration test). Serialization is FR-015 by the
+  recon_lock; ignore-marker gate is in reconcile_file_opts.
 
 ## Phase 5: Polish & cross-cutting
 

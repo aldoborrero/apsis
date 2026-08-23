@@ -500,4 +500,91 @@ mod tests {
             "failed file not re-probed until it changes"
         );
     }
+
+    // --- US3 state-control ops (spec 005 T016, unit level) ---
+
+    fn sched_cfg(dir: &std::path::Path) -> apsis_common::config::SchedulerConfig {
+        serde_json::from_value(serde_json::json!({
+            "library": [{ "name": "tv", "path": dir.to_str().unwrap(), "profile": "tv" }],
+            "profiles": { "tv": {
+                "video": {"codec":"hevc","skip_codecs":["hevc"]},
+                "audio": {}, "subtitles": {}, "output": {"container":"mkv"}
+            }},
+        }))
+        .unwrap()
+    }
+
+    fn temp_media() -> (std::path::PathBuf, String) {
+        let dir = std::env::temp_dir().join(format!(
+            "apsis-sop-{}-{}",
+            std::process::id(),
+            ulid::Ulid::new()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let f = dir.join("x.mkv");
+        std::fs::write(&f, b"x").unwrap();
+        let path = f.to_str().unwrap().to_string();
+        (dir, path)
+    }
+
+    #[tokio::test]
+    async fn state_op_mark_done_then_requeue() {
+        use apsis_common::control::{StateControlRequest, StateOp, StateOutcome};
+        let (r, _) = reconciler(video("h264"));
+        let (dir, path) = temp_media();
+        let cfg = sched_cfg(&dir);
+
+        let mark = StateControlRequest {
+            path: path.clone(),
+            op: StateOp::MarkDone,
+        };
+        assert_eq!(r.apply_state_op(&mark, &cfg).await, StateOutcome::Applied);
+        assert_eq!(
+            r.store.get(&path).await.unwrap().unwrap().0.status,
+            Status::Done
+        );
+
+        let requeue = StateControlRequest {
+            path: path.clone(),
+            op: StateOp::Requeue,
+        };
+        assert_eq!(
+            r.apply_state_op(&requeue, &cfg).await,
+            StateOutcome::Applied
+        );
+        assert!(
+            r.store.get(&path).await.unwrap().is_none(),
+            "requeue cleared it"
+        );
+
+        // Requeue of an absent key → NotFound.
+        let absent = StateControlRequest {
+            path: "/nope.mkv".into(),
+            op: StateOp::Requeue,
+        };
+        assert_eq!(
+            r.apply_state_op(&absent, &cfg).await,
+            StateOutcome::NotFound
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[tokio::test]
+    async fn state_op_force_enqueues_a_compliant_file() {
+        use apsis_common::control::{StateControlRequest, StateOp, StateOutcome};
+        // hevc source + hevc in skip_codecs → normally skipped; force enqueues it anyway.
+        let (r, _) = reconciler(video("hevc"));
+        let (dir, path) = temp_media();
+        let cfg = sched_cfg(&dir);
+
+        let force = StateControlRequest {
+            path: path.clone(),
+            op: StateOp::Force,
+        };
+        assert_eq!(r.apply_state_op(&force, &cfg).await, StateOutcome::Applied);
+        assert_eq!(r.publisher.len(), 1, "force enqueued the compliant file");
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
 }
