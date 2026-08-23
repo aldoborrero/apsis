@@ -105,16 +105,30 @@ impl Worker {
         self.running.clone()
     }
 
-    /// Whether this worker is currently paused (spec 005 US1). Reads the pause key each
-    /// call (covering reconnect re-read, FR-001). A read error **fails open** (not paused)
-    /// — a transient KV hiccup must not silently wedge the worker.
-    async fn is_paused(&self) -> bool {
+    /// The effective pause mode for this worker (spec 005 US1), or `None` if not paused.
+    /// Reads the pause key each call (covering reconnect re-read, FR-001). A read error
+    /// **fails open** (not paused) — a transient KV hiccup must not silently wedge the worker.
+    async fn effective_pause(&self) -> Option<apsis_common::control::PauseMode> {
         match self.kv.get_pause().await {
-            Ok(state) => state.effective(&self.id).is_some(),
+            Ok(state) => state.effective(&self.id),
             Err(e) => {
                 warn!(error = %e, "pause-state read failed; treating as not paused");
-                false
+                None
             }
+        }
+    }
+
+    /// Whether this worker is currently paused at all (soft or hard).
+    async fn is_paused(&self) -> bool {
+        self.effective_pause().await.is_some()
+    }
+
+    /// Fire the in-flight job's cancel (defer) if one is running — used by a hard pause
+    /// to abort the current transcode (spec 005 FR-002).
+    fn cancel_running(&self) {
+        if let Some(r) = self.running.lock().expect("registry lock").as_ref() {
+            *r.disposition.lock().expect("disposition lock") = Some(Disposition::Defer);
+            r.cancel.notify_one();
         }
     }
 
@@ -161,6 +175,13 @@ impl Worker {
                         r = &mut proc => break r,
                         () = tokio::time::sleep(period) => {
                             let _ = msg.ack_with(AckKind::Progress).await;
+                            // Hard pause (spec 005 FR-002): abort the in-flight transcode.
+                            if matches!(
+                                self.effective_pause().await,
+                                Some(apsis_common::control::PauseMode::Hard)
+                            ) {
+                                self.cancel_running();
+                            }
                         }
                     }
                 }
