@@ -157,7 +157,10 @@ async fn reconcile_all(reconciler: &Coordinator, cfg: &SchedulerConfig) {
                     metrics::counter!("apsis_override_failed_total").increment(1);
                 }
                 Ok(_) => {}
-                Err(e) => tracing::warn!(file, error = %e, "reconcile failed"),
+                Err(e) => {
+                    metrics::counter!("apsis_reconcile_errors_total").increment(1);
+                    tracing::warn!(file, error = %e, "reconcile failed");
+                }
             }
         }
     }
@@ -204,13 +207,56 @@ async fn consume_results(client: async_nats::Client) {
     tracing::warn!("jobs.result subscription ended");
 }
 
-/// Install the Prometheus exporter (scrape endpoint at `APSIS_METRICS_ADDR`).
+/// Reconcile passes are fast (a filesystem walk + probes of only what changed);
+/// bucket from tens of ms to a few minutes for a large library.
+const RECONCILE_BUCKETS: &[f64] = &[
+    0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0, 30.0, 60.0, 120.0, 300.0,
+];
+
+/// Install the Prometheus exporter (scrape endpoint at `APSIS_METRICS_ADDR`) and
+/// register `# HELP`/`# TYPE` descriptions for every coordinator metric.
+///
+/// `apsis_reconcile_seconds` gets explicit histogram buckets so it aggregates across
+/// instances at the hub (the exporter's default would emit a per-instance summary,
+/// whose quantiles cannot be re-aggregated).
 fn install_metrics(default_addr: &str) -> Result<(), Fatal> {
+    use metrics::Unit;
+    use metrics_exporter_prometheus::Matcher;
     let addr: std::net::SocketAddr = std::env::var("APSIS_METRICS_ADDR")
         .unwrap_or_else(|_| default_addr.to_string())
         .parse()?;
     metrics_exporter_prometheus::PrometheusBuilder::new()
+        .set_buckets_for_metric(
+            Matcher::Full("apsis_reconcile_seconds".to_string()),
+            RECONCILE_BUCKETS,
+        )?
         .with_http_listener(addr)
         .install()?;
+
+    metrics::describe_histogram!(
+        "apsis_reconcile_seconds",
+        Unit::Seconds,
+        "Wall time of one full reconcile pass over all libraries"
+    );
+    metrics::describe_counter!(
+        "apsis_reconcile_enqueued_total",
+        Unit::Count,
+        "Transcode jobs enqueued (drift found and claimed)"
+    );
+    metrics::describe_counter!(
+        "apsis_reconcile_errors_total",
+        Unit::Count,
+        "Files whose reconcile errored (store/probe failure), logged and skipped"
+    );
+    metrics::describe_counter!(
+        "apsis_override_failed_total",
+        Unit::Count,
+        "Files dropped because a profile-rule override failed to resolve"
+    );
+    metrics::describe_counter!(
+        "apsis_results_total",
+        Unit::Count,
+        "Worker completions observed on the result feed, by outcome"
+    );
     Ok(())
 }

@@ -51,13 +51,55 @@ async fn serve() -> Result<(), Fatal> {
     worker.run(&tuning).await
 }
 
-/// Install the Prometheus exporter (scrape endpoint at `APSIS_METRICS_ADDR`).
+/// Transcodes span seconds (a small clip) to hours (a 4K feature); bucket to 4h so
+/// the tail is visible and the histogram aggregates across workers at the hub.
+const TRANSCODE_BUCKETS: &[f64] = &[
+    5.0, 15.0, 30.0, 60.0, 120.0, 300.0, 600.0, 1200.0, 1800.0, 3600.0, 7200.0, 14400.0,
+];
+
+/// Install the Prometheus exporter (scrape endpoint at `APSIS_METRICS_ADDR`) and
+/// register `# HELP`/`# TYPE` descriptions for every worker metric.
+///
+/// `apsis_transcode_seconds` gets explicit histogram buckets so it aggregates across
+/// workers at the hub (the exporter's default would emit a per-instance summary).
 fn install_metrics(default_addr: &str) -> Result<(), Fatal> {
+    use metrics::Unit;
+    use metrics_exporter_prometheus::Matcher;
     let addr: std::net::SocketAddr = std::env::var("APSIS_METRICS_ADDR")
         .unwrap_or_else(|_| default_addr.to_string())
         .parse()?;
     metrics_exporter_prometheus::PrometheusBuilder::new()
+        .set_buckets_for_metric(
+            Matcher::Full("apsis_transcode_seconds".to_string()),
+            TRANSCODE_BUCKETS,
+        )?
         .with_http_listener(addr)
         .install()?;
+
+    metrics::describe_histogram!(
+        "apsis_transcode_seconds",
+        Unit::Seconds,
+        "Wall time of one transcode (claim to atomic replace)"
+    );
+    metrics::describe_counter!(
+        "apsis_jobs_total",
+        Unit::Count,
+        "Transcode jobs finished, by outcome (done/failed)"
+    );
+    metrics::describe_counter!(
+        "apsis_used_fallback_total",
+        Unit::Count,
+        "Transcodes that fell back from the primary backend (VAAPI) to CPU"
+    );
+    metrics::describe_counter!(
+        "apsis_bytes_saved_total",
+        Unit::Bytes,
+        "Cumulative bytes saved (input minus output) across successful transcodes"
+    );
+    metrics::describe_counter!(
+        "apsis_verify_failures_total",
+        Unit::Count,
+        "Outputs rejected by post-transcode verification (bad duration / bloated)"
+    );
     Ok(())
 }
