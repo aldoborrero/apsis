@@ -6,9 +6,13 @@
 use std::path::PathBuf;
 
 use apsis_common::config::Library;
-use apsis_common::{Job, JobPublisher, StateEntry, StateStore, Status, StoreError};
+use apsis_common::{
+    Decision, DecisionKind, Job, JobPublisher, StateEntry, StateStore, Status, StoreError,
+    has_ignore_marker,
+};
 use apsis_engine::{
-    FileFacts, Probe, Profile, build_context, parse_probe, plan, resolve_effective_profile,
+    FileFacts, Probe, Profile, SkipReason, build_context, parse_probe, plan,
+    resolve_effective_profile,
 };
 use async_trait::async_trait;
 use thiserror::Error;
@@ -88,6 +92,14 @@ impl<S: StateStore, Q: JobPublisher, P: Prober> Reconciler<S, Q, P> {
         library: &Library,
         profile: &Profile,
     ) -> std::result::Result<ReconcileOutcome, ReconcileError> {
+        // Ignore marker (spec 005 FR-016): an operator "never transcode this" — a recoverable
+        // on-disk marker beside the media. Honored before anything else, so an ignored file is
+        // never probed or planned, and it survives a KV wipe (unlike a KV status).
+        if has_ignore_marker(std::path::Path::new(path)) {
+            tracing::Span::current().record("outcome", "ignored");
+            return Ok(ReconcileOutcome::Skipped);
+        }
+
         // Gate: unchanged & already handled → no probe, no-op.
         if let Some((st, _)) = self.store.get(path).await?
             && st.version == ver
@@ -145,9 +157,11 @@ impl<S: StateStore, Q: JobPublisher, P: Prober> Reconciler<S, Q, P> {
         let file_plan = plan(path, &probe, &effective);
 
         if file_plan.should_skip {
-            self.store
-                .put(path, &entry(Status::Done, ver, None))
-                .await?;
+            // Persist the positive skip decision (spec 005 FR-011) so "why skipped" is
+            // queryable from the KV without a re-probe.
+            let mut e = entry(Status::Done, ver, None);
+            e.decision = decision_from(file_plan.skip_reason.as_ref());
+            self.store.put(path, &e).await?;
             tracing::Span::current().record("outcome", "compliant");
             return Ok(ReconcileOutcome::Compliant);
         }
@@ -198,6 +212,24 @@ fn is_handled(s: Status) -> bool {
         s,
         Status::Done | Status::Pending | Status::InProgress | Status::Failed
     )
+}
+
+/// Map the engine's positive [`SkipReason`] into the persisted [`Decision`] (spec 005 FR-011).
+fn decision_from(skip: Option<&SkipReason>) -> Option<Decision> {
+    skip.map(|s| match s {
+        SkipReason::CompliantCodec(c) => Decision {
+            kind: DecisionKind::CompliantCodec,
+            detail: c.clone(),
+        },
+        SkipReason::ResolutionBelow(r) => Decision {
+            kind: DecisionKind::ResolutionBelow,
+            detail: r.clone(),
+        },
+        SkipReason::BitrateBelow(b) => Decision {
+            kind: DecisionKind::BitrateBelow,
+            detail: b.clone(),
+        },
+    })
 }
 
 fn entry(status: Status, ver: &str, last_error: Option<String>) -> StateEntry {
