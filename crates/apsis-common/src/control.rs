@@ -19,6 +19,9 @@ pub fn subject_progress(job_id: &str) -> String {
     format!("apsis.progress.{job_id}")
 }
 
+/// Wildcard over every job's progress subject — for a relay/console subscribing to all jobs.
+pub const SUBJECT_PROGRESS_WILDCARD: &str = "apsis.progress.>";
+
 // --- Pause (US1) ---
 
 /// Which workers a pause applies to. Serializes as `"global"` or `{"worker": "<id>"}`.

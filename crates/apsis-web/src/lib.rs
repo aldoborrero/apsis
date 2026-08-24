@@ -5,6 +5,8 @@
 pub mod app;
 #[cfg(feature = "ssr")]
 pub mod auth;
+#[cfg(feature = "ssr")]
+pub mod progress;
 pub mod server;
 pub mod view;
 
