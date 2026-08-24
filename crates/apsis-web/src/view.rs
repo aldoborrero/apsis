@@ -16,3 +16,19 @@ pub struct FileRow {
     /// Set while `InProgress` (for cancel + progress correlation).
     pub job_id: Option<String>,
 }
+
+/// The per-file detail view (US2): everything the KV `StateEntry` holds, so the operator can
+/// see *why* a file is in its current state — the decision, the last error, retry count.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FileDetail {
+    pub path: String,
+    pub status: String,
+    pub version: String,
+    pub job_id: Option<String>,
+    pub attempts: u32,
+    /// RFC 3339 timestamp of the last state write.
+    pub updated_at: String,
+    pub last_error: Option<String>,
+    pub decision: Option<String>,
+    pub ignored: bool,
+}

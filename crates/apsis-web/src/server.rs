@@ -1,7 +1,7 @@
 //! Server functions — the NATS bridge (spec 006). All bodies run only on the server; the
 //! client gets a fetch stub. Reads the spec 005 KV; (later) publishes control intents.
 
-use crate::view::FileRow;
+use crate::view::{FileDetail, FileRow};
 use leptos::prelude::*;
 
 /// Server-only shared state: the NATS KV + client, injected as an axum `Extension`.
@@ -38,6 +38,34 @@ pub async fn list_files() -> Result<Vec<FileRow>, ServerFnError> {
     }
     rows.sort_by(|a, b| a.path.cmp(&b.path));
     Ok(rows)
+}
+
+/// The full state of one file (spec 006 US2). Reads only the spec 005 KV.
+// Explicit endpoint struct name — the default (`FileDetail`) would collide with the view type.
+#[server(FetchFileDetail)]
+pub async fn file_detail(path: String) -> Result<Option<FileDetail>, ServerFnError> {
+    use apsis_common::{StateStore, has_ignore_marker};
+    use axum::Extension;
+    use leptos_axum::extract;
+
+    let Extension(state): Extension<ServerState> = extract().await?;
+    let Some((e, _)) = state.kv.get(&path).await.map_err(err)? else {
+        return Ok(None);
+    };
+    Ok(Some(FileDetail {
+        status: status_str(e.status).to_string(),
+        version: e.version,
+        job_id: e.job_id.map(|id| id.to_string()),
+        attempts: e.attempts,
+        updated_at: e
+            .updated_at
+            .format(&time::format_description::well_known::Rfc3339)
+            .unwrap_or_default(),
+        last_error: e.last_error,
+        decision: e.decision.map(|d| format!("{:?}: {}", d.kind, d.detail)),
+        ignored: has_ignore_marker(std::path::Path::new(&path)),
+        path,
+    }))
 }
 
 #[cfg(feature = "ssr")]

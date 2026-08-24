@@ -1,8 +1,9 @@
 use leptos::prelude::*;
 use leptos_meta::{MetaTags, Stylesheet, Title, provide_meta_context};
 use leptos_router::{
-    StaticSegment,
+    StaticSegment, WildcardSegment,
     components::{Route, Router, Routes},
+    hooks::use_params_map,
 };
 
 /// The SSR document shell (the `<html>` skeleton + hydration scripts).
@@ -34,6 +35,7 @@ pub fn App() -> impl IntoView {
             <main>
                 <Routes fallback=|| "Not found.".into_view()>
                     <Route path=StaticSegment("") view=Console/>
+                    <Route path=(StaticSegment("file"), WildcardSegment("path")) view=FileDetailView/>
                 </Routes>
             </main>
         </Router>
@@ -48,6 +50,14 @@ fn Console() -> impl IntoView {
     use leptos::task::spawn_local;
 
     let files = Resource::new(|| (), |()| crate::server::list_files());
+
+    // Poll the file list every 3 s (client-only; the effect never runs during SSR).
+    Effect::new(move |_| {
+        set_interval(
+            move || files.refetch(),
+            std::time::Duration::from_secs(3),
+        );
+    });
 
     // A control op runs the server function, then refetches the file list.
     let run_state = move |path: String, op: &'static str| {
@@ -109,9 +119,10 @@ fn Console() -> impl IntoView {
                                     });
                                     let p_force = path.clone();
                                     let p_done = path.clone();
+                                    let href = format!("/file/{}", r.path);
                                     view! {
                                         <tr>
-                                            <td>{r.path}</td>
+                                            <td><a href=href>{r.path}</a></td>
                                             <td>{r.status}{r.ignored.then_some(" (ignored)")}</td>
                                             <td>{r.decision.unwrap_or_default()}</td>
                                             <td>
@@ -127,6 +138,40 @@ fn Console() -> impl IntoView {
                             </tbody>
                         </table>
                     }.into_any(),
+                    Err(e) => view! { <p>"Error: "{e.to_string()}</p> }.into_any(),
+                }
+            })}
+        </Suspense>
+    }
+}
+
+/// The per-file detail view (US2): why a file is in its state — decision, last error, attempts.
+#[component]
+fn FileDetailView() -> impl IntoView {
+    let params = use_params_map();
+    // `path` is a wildcard segment, so it carries the full (possibly slashed) key.
+    let detail = Resource::new(
+        move || params.read().get("path").unwrap_or_default(),
+        |path| crate::server::file_detail(path),
+    );
+    view! {
+        <p><a href="/">"← all files"</a></p>
+        <Suspense fallback=|| view! { <p>"Loading…"</p> }>
+            {move || Suspend::new(async move {
+                match detail.await {
+                    Ok(Some(d)) => view! {
+                        <h1>{d.path}</h1>
+                        <dl>
+                            <dt>"Status"</dt><dd>{d.status}{d.ignored.then_some(" (ignored)")}</dd>
+                            <dt>"Version"</dt><dd>{d.version}</dd>
+                            <dt>"Attempts"</dt><dd>{d.attempts}</dd>
+                            <dt>"Updated"</dt><dd>{d.updated_at}</dd>
+                            <dt>"Job"</dt><dd>{d.job_id.unwrap_or_default()}</dd>
+                            <dt>"Decision"</dt><dd>{d.decision.unwrap_or_default()}</dd>
+                            <dt>"Last error"</dt><dd>{d.last_error.unwrap_or_default()}</dd>
+                        </dl>
+                    }.into_any(),
+                    Ok(None) => view! { <p>"No such file."</p> }.into_any(),
                     Err(e) => view! { <p>"Error: "{e.to_string()}</p> }.into_any(),
                 }
             })}
