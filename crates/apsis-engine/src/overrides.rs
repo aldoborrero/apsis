@@ -259,6 +259,7 @@ fn canary_context() -> Result<Context<'static>, EngineError> {
             forced: false,
             ..Default::default()
         }],
+        duration: 1800.0,
     };
     let facts = FileFacts {
         path: "/media/tv/Show/S01E01.mkv",
@@ -442,6 +443,31 @@ mod tests {
         let base = base_profile();
         let eff = resolve_effective_profile(&base, &rules(SPEC_RULES), &ctx).unwrap();
         assert_eq!(eff, base, "no rule matched → base profile verbatim");
+    }
+
+    #[test]
+    fn duration_from_probe_drives_the_rule() {
+        // A rule keyed on `duration` (spec 004): fires only when the container is long enough.
+        // Guards the wiring that was silently broken — `duration` hardcoded to 0.0 upstream.
+        let probe = Probe {
+            video: Some(video("h264", 1920, 1080)),
+            ..Default::default()
+        };
+        let rule = rules(r#"[{"when":"duration > 3600","set":{"video.codec":"av1"}}]"#);
+
+        // 2h film → fires.
+        let long = FileFacts {
+            duration: 7200.0,
+            ..facts()
+        };
+        let ctx = build_context(&probe, &long).unwrap();
+        let eff = resolve_effective_profile(&base_profile(), &rule, &ctx).unwrap();
+        assert_eq!(eff.video.codec, VideoCodec::Av1, "long file → rule fires");
+
+        // 30m episode (the default facts) → does not fire.
+        let ctx = build_context(&probe, &facts()).unwrap();
+        let eff = resolve_effective_profile(&base_profile(), &rule, &ctx).unwrap();
+        assert_eq!(eff, base_profile(), "short file → base profile verbatim");
     }
 
     #[test]

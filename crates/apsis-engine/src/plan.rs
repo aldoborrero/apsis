@@ -134,7 +134,9 @@ pub enum PlanStatus {
 
 /// The full plan for a file. `source_probe` is retained because command building
 /// needs the ordered source streams to map absolute indices to `0:a:N`/`0:s:N`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+// No `Eq`: `source_probe: Probe` now carries an `f64` duration. Nothing relies on `FilePlan: Eq`
+// (the enclosing `Job` is already `PartialEq`-only, via `Profile`).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct FilePlan {
     pub status: PlanStatus,

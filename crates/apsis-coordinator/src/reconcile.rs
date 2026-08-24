@@ -58,7 +58,14 @@ pub(crate) struct FfprobeProber {
 impl Prober for FfprobeProber {
     async fn probe(&self, path: &str) -> std::io::Result<Probe> {
         let out = tokio::process::Command::new(&self.ffprobe)
-            .args(["-v", "quiet", "-print_format", "json", "-show_streams"])
+            .args([
+                "-v",
+                "quiet",
+                "-print_format",
+                "json",
+                "-show_streams",
+                "-show_format",
+            ])
             .arg(path)
             .output()
             .await?;
@@ -130,10 +137,10 @@ impl<S: StateStore, Q: JobPublisher, P: Prober> Reconciler<S, Q, P> {
         let effective = if profile.rules.is_empty() {
             profile.clone()
         } else {
-            // File facts the CEL context needs beyond the probe: `size` rides on the
-            // `mtime:size` version token; `container` is the path's extension, lowercased
-            // to match the contract; `duration` is not yet carried by the probe (contract:
-            // 0.0 = unknown).
+            // File facts the CEL context needs beyond the probe streams: `size` rides on the
+            // `mtime:size` version token; `container` is the path's extension, lowercased to
+            // match the contract; `duration` comes from the probe's `format.duration`
+            // (`-show_format`), `0.0` when ffprobe omits it.
             let container = std::path::Path::new(path)
                 .extension()
                 .and_then(|e| e.to_str())
@@ -147,7 +154,7 @@ impl<S: StateStore, Q: JobPublisher, P: Prober> Reconciler<S, Q, P> {
             let facts = FileFacts {
                 path,
                 container: &container,
-                duration: 0.0,
+                duration: probe.duration,
                 size,
             };
             let resolved = build_context(&probe, &facts)

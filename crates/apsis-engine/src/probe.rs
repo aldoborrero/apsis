@@ -33,12 +33,17 @@ pub struct StreamInfo {
 }
 
 /// Parsed probe result: the first video stream + all audio/subtitle streams.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+// No `Eq`: `duration` is an `f64` (`format.duration` seconds). Nothing relies on `Probe: Eq`.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Probe {
     pub video: Option<StreamInfo>,
     pub audio: Vec<StreamInfo>,
     pub subtitles: Vec<StreamInfo>,
+    /// Container duration in seconds (ffprobe `format.duration`), `0.0` if absent. Exposed to
+    /// CEL profile rules as `duration`.
+    #[serde(default)]
+    pub duration: f64,
 }
 
 impl Probe {
@@ -58,6 +63,15 @@ impl Probe {
 struct RawProbe {
     #[serde(default)]
     streams: Vec<RawStream>,
+    #[serde(default)]
+    format: RawFormat,
+}
+
+#[derive(Deserialize, Default)]
+struct RawFormat {
+    // ffprobe emits `duration` as a string ("1800.024000"); often absent for raw streams.
+    #[serde(default)]
+    duration: String,
 }
 
 #[derive(Deserialize)]
@@ -132,7 +146,7 @@ struct RawDisposition {
     forced: i32,
 }
 
-/// Parse `ffprobe -print_format json -show_streams` output into a [`Probe`].
+/// Parse `ffprobe -print_format json -show_streams -show_format` output into a [`Probe`].
 pub fn parse_probe(json: &str) -> Result<Probe, EngineError> {
     let raw: RawProbe = serde_json::from_str(json)?;
     let mut probe = Probe::default();
@@ -169,6 +183,7 @@ pub fn parse_probe(json: &str) -> Result<Probe, EngineError> {
             _ => {}
         }
     }
+    probe.duration = raw.format.duration.parse().unwrap_or(0.0);
     Ok(probe)
 }
 
@@ -176,7 +191,14 @@ pub fn parse_probe(json: &str) -> Result<Probe, EngineError> {
 #[cfg(feature = "probe-exec")]
 pub fn probe_file(path: &std::path::Path, ffprobe: &std::path::Path) -> Result<Probe, EngineError> {
     let out = std::process::Command::new(ffprobe)
-        .args(["-v", "quiet", "-print_format", "json", "-show_streams"])
+        .args([
+            "-v",
+            "quiet",
+            "-print_format",
+            "json",
+            "-show_streams",
+            "-show_format",
+        ])
         .arg(path)
         .output()?;
     if !out.status.success() {
@@ -254,6 +276,18 @@ mod tests {
         let json = r#"{"streams":[{"index":0,"codec_type":"video","codec_name":"hevc",
             "color_transfer":"smpte2084"}]}"#;
         assert!(parse_probe(json).unwrap().is_hdr());
+    }
+
+    #[test]
+    fn parses_duration_from_show_format() {
+        // `-show_format` puts the container duration (a string) under `format`; it feeds the
+        // CEL `duration` variable. Absent `format` → 0.0, never an error.
+        let json = r#"{"streams":[{"index":0,"codec_type":"video","codec_name":"hevc"}],
+            "format":{"filename":"x.mkv","format_name":"matroska","duration":"1830.024000"}}"#;
+        assert!((parse_probe(json).unwrap().duration - 1830.024).abs() < 1e-6);
+
+        let no_format = r#"{"streams":[{"index":0,"codec_type":"video","codec_name":"hevc"}]}"#;
+        assert!(parse_probe(no_format).unwrap().duration.abs() < f64::EPSILON);
     }
 
     #[cfg(feature = "probe-exec")]
