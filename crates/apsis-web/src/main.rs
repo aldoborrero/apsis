@@ -32,7 +32,10 @@ async fn main() {
     let routes = generate_route_list(App);
 
     let app = Router::new()
-        .route("/progress", axum::routing::get(apsis_web::progress::progress_sse))
+        .route(
+            "/progress",
+            axum::routing::get(apsis_web::progress::progress_sse),
+        )
         .leptos_routes(&leptos_options, routes, {
             let leptos_options = leptos_options.clone();
             move || shell(leptos_options.clone())

@@ -21,6 +21,11 @@ console_error_panic_hook = { version = "0.1", optional = true }
 # Pinned to match the nixpkgs `wasm-bindgen-cli` in the dev shell (cargo-leptos needs an
 # exact version match between the crate and the CLI that generates the JS/WASM glue).
 wasm-bindgen = { version = "=0.2.121", optional = true }
+# Client-only: the EventSource that consumes the `/progress` SSE stream (US1 live progress).
+web-sys = { version = "0.3", features = [
+    "EventSource",
+    "MessageEvent",
+], optional = true }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 # Server-only: the NATS bridge (control types, KvStateStore, connect). ssr feature only —
@@ -31,11 +36,22 @@ time = { version = "0.3", features = ["formatting"], optional = true }
 futures = { version = "0.3", optional = true }
 
 [dev-dependencies]
-tokio = { version = "1", features = ["rt", "macros"] }
+# Integration tests drive the ssr server helpers against a real nats-server, so they need a
+# full runtime + the NATS/common crates by name (the lib's own copies are behind `dep:`).
+tokio = { version = "1", features = ["full"] }
+apsis-common = { path = "../apsis-common" }
+async-nats = "0.42"
+futures = "0.3"
+time = "0.3"
 
 [features]
 default = ["ssr"]
-hydrate = ["leptos/hydrate", "dep:console_error_panic_hook", "dep:wasm-bindgen"]
+hydrate = [
+    "leptos/hydrate",
+    "dep:console_error_panic_hook",
+    "dep:wasm-bindgen",
+    "dep:web-sys",
+]
 ssr = [
     "dep:axum",
     "dep:tokio",

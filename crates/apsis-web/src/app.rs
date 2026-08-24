@@ -42,18 +42,47 @@ pub fn App() -> impl IntoView {
     }
 }
 
-/// The operator console (spec 006): the file table + control actions (US1–US3). Every action
-/// is a spec 005 control intent published by a server function — nothing the `nats` CLI can't.
+/// A live `job_id -> Progress` map, fed by the `/progress` SSE stream.
+type ProgressMap = std::collections::HashMap<String, crate::view::Progress>;
+
+/// Open an `EventSource` on `/progress` and fold each frame into `progress` (client-only).
+#[cfg(feature = "hydrate")]
+fn subscribe_progress(progress: RwSignal<ProgressMap>) {
+    use wasm_bindgen::JsCast;
+    use wasm_bindgen::closure::Closure;
+    let Ok(es) = web_sys::EventSource::new("/progress") else {
+        return;
+    };
+    let on_msg =
+        Closure::<dyn FnMut(web_sys::MessageEvent)>::new(move |e: web_sys::MessageEvent| {
+            if let Some(txt) = e.data().as_string() {
+                if let Ok(p) = serde_json::from_str::<crate::view::Progress>(&txt) {
+                    progress.update(|m| {
+                        m.insert(p.job_id.clone(), p);
+                    });
+                }
+            }
+        });
+    es.set_onmessage(Some(on_msg.as_ref().unchecked_ref()));
+    // The console lives as long as the tab; leak the closure + source so they keep firing.
+    on_msg.forget();
+    std::mem::forget(es);
+}
+
 #[component]
 fn Console() -> impl IntoView {
     use crate::server::{cancel, pause, state_op};
     use leptos::task::spawn_local;
 
     let files = Resource::new(|| (), |()| crate::server::list_files());
+    let progress = RwSignal::<ProgressMap>::new(ProgressMap::new());
 
-    // Poll the file list every 3 s (client-only; the effect never runs during SSR).
+    // Poll the file list every 3 s + subscribe to live progress (client-only; the effect never
+    // runs during SSR).
     Effect::new(move |_| {
         set_interval(move || files.refetch(), std::time::Duration::from_secs(3));
+        #[cfg(feature = "hydrate")]
+        subscribe_progress(progress);
     });
 
     // A control op runs the server function, then refetches the file list.
@@ -88,7 +117,8 @@ fn Console() -> impl IntoView {
                     Ok(rows) => view! {
                         <table>
                             <thead><tr>
-                                <th>"File"</th><th>"Status"</th><th>"Why"</th><th>"Actions"</th>
+                                <th>"File"</th><th>"Status"</th><th>"Progress"</th>
+                                <th>"Why"</th><th>"Actions"</th>
                             </tr></thead>
                             <tbody>
                                 {rows.into_iter().map(|r| {
@@ -117,10 +147,21 @@ fn Console() -> impl IntoView {
                                     let p_force = path.clone();
                                     let p_done = path.clone();
                                     let href = format!("/file/{}", r.path);
+                                    // Reactive: re-renders as SSE progress frames land for this job.
+                                    let prog_job = job.clone();
+                                    let prog_cell = move || {
+                                        prog_job
+                                            .as_ref()
+                                            .and_then(|j| progress.get().get(j).map(|p| {
+                                                format!("{:.1}x · eta {}s", p.speed, p.eta_s)
+                                            }))
+                                            .unwrap_or_default()
+                                    };
                                     view! {
                                         <tr>
                                             <td><a href=href>{r.path}</a></td>
                                             <td>{r.status}{r.ignored.then_some(" (ignored)")}</td>
+                                            <td>{prog_cell}</td>
                                             <td>{r.decision.unwrap_or_default()}</td>
                                             <td>
                                                 {cancel_btn}

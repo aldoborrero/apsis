@@ -27,7 +27,10 @@ impl<S: Send + Sync> FromRequestParts<S> for ProxyUser {
                 }
             }
         }
-        Err((StatusCode::UNAUTHORIZED, "missing reverse-proxy user header"))
+        Err((
+            StatusCode::UNAUTHORIZED,
+            "missing reverse-proxy user header",
+        ))
     }
 }
 
