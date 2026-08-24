@@ -40,11 +40,34 @@ pub fn App() -> impl IntoView {
     }
 }
 
-/// The operator console (US1–US3 land here). Placeholder until the file table + controls.
+/// The operator console (spec 006). US1: the file table. US2/US3 (decision detail, control
+/// buttons) build on this.
 #[component]
 fn Console() -> impl IntoView {
+    // A resource over the read server function; refetched on demand (later: on an interval).
+    let files = Resource::new(|| (), |()| crate::server::list_files());
     view! {
         <h1>"apsis"</h1>
-        <p>"Operator console — per-file state, decisions, and control over spec 005."</p>
+        <Suspense fallback=|| view! { <p>"Loading…"</p> }>
+            {move || Suspend::new(async move {
+                match files.await {
+                    Ok(rows) => view! {
+                        <table>
+                            <thead><tr><th>"File"</th><th>"Status"</th><th>"Why"</th></tr></thead>
+                            <tbody>
+                                {rows.into_iter().map(|r| view! {
+                                    <tr>
+                                        <td>{r.path}</td>
+                                        <td>{r.status}{r.ignored.then_some(" (ignored)")}</td>
+                                        <td>{r.decision.unwrap_or_default()}</td>
+                                    </tr>
+                                }).collect_view()}
+                            </tbody>
+                        </table>
+                    }.into_any(),
+                    Err(e) => view! { <p>"Error: "{e.to_string()}</p> }.into_any(),
+                }
+            })}
+        </Suspense>
     }
 }

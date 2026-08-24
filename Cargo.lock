@@ -64,6 +64,7 @@ dependencies = [
  "async-trait",
  "bytes",
  "figment",
+ "futures",
  "garde",
  "humantime",
  "humantime-serde",
@@ -111,12 +112,15 @@ dependencies = [
 name = "apsis-web"
 version = "0.0.0"
 dependencies = [
+ "apsis-common",
+ "async-nats",
  "axum",
  "console_error_panic_hook",
  "leptos",
  "leptos_axum",
  "leptos_meta",
  "leptos_router",
+ "serde",
  "tokio",
  "wasm-bindgen",
 ]

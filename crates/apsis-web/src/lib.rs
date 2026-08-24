@@ -3,6 +3,8 @@
 //! surface (reads KV/progress, publishes control intents) — no new backend.
 
 pub mod app;
+pub mod server;
+pub mod view;
 
 /// Wasm entry: hydrate the SSR'd markup into a live Leptos app.
 #[cfg(feature = "hydrate")]

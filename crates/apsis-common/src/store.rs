@@ -105,6 +105,28 @@ impl KvStateStore {
         }
     }
 
+    /// Every file-path key in the bucket (excludes the `__control__/*` control keys).
+    /// Used by the read-only console (spec 006) to list tracked files.
+    ///
+    /// # Errors
+    /// Backend failure.
+    pub async fn list_keys(&self) -> Result<Vec<String>, StoreError> {
+        use futures::TryStreamExt;
+        let keys = self
+            .0
+            .keys()
+            .await
+            .map_err(|e| StoreError::Backend(e.into()))?;
+        let all: Vec<String> = keys
+            .try_collect()
+            .await
+            .map_err(|e| StoreError::Backend(e.into()))?;
+        Ok(all
+            .into_iter()
+            .filter(|k| !k.starts_with("__control__"))
+            .collect())
+    }
+
     /// Persist the pause state. **Coordinator-only writer** (spec 005 FR-014).
     ///
     /// # Errors

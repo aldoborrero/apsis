@@ -21,7 +21,11 @@ console_error_panic_hook = { version = "0.1", optional = true }
 # Pinned to match the nixpkgs `wasm-bindgen-cli` in the dev shell (cargo-leptos needs an
 # exact version match between the crate and the CLI that generates the JS/WASM glue).
 wasm-bindgen = { version = "=0.2.121", optional = true }
-# apsis-common (control types, KvStateStore, connect) is wired in with the server functions.
+serde = { version = "1", features = ["derive"] }
+# Server-only: the NATS bridge (control types, KvStateStore, connect). ssr feature only —
+# never compiled into the wasm client.
+apsis-common = { path = "../apsis-common", optional = true }
+async-nats = { version = "0.42", optional = true }
 
 [features]
 default = ["ssr"]
@@ -30,6 +34,8 @@ ssr = [
     "dep:axum",
     "dep:tokio",
     "dep:leptos_axum",
+    "dep:apsis-common",
+    "dep:async-nats",
     "leptos/ssr",
     "leptos_meta/ssr",
     "leptos_router/ssr",
