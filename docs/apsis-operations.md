@@ -200,10 +200,11 @@ share those fields. Example: `RUST_LOG=apsis_worker=debug` for verbose worker tr
 
 ## Control plane (spec 005)
 
-Operator control travels over NATS subjects — no web UI, no HTTP API. Everything below works
-from the `nats` CLI (in the dev shell); the daemons are the sole writers of state, so a
-control client only ever *publishes intents*. Each op increments
-`apsis_control_ops_total{op}` and is logged.
+Operator control travels over NATS subjects. Everything below works from the `nats` CLI (in
+the dev shell); the daemons are the sole writers of state, so a control client only ever
+*publishes intents*. Each op increments `apsis_control_ops_total{op}` and is logged. The
+[Console](#console-spec-006) is a thin browser front-end over exactly these subjects — it can
+do nothing the `nats` CLI can't.
 
 **Pause / resume** — publish a pause intent; the coordinator persists it, workers watch it.
 
@@ -252,6 +253,44 @@ the marker to un-ignore.
 subscribe `apsis.progress.*`, read the KV** — no KV write, no job-stream publish (the daemons
 hold those). This makes "owners are the sole writers" enforced, not conventional. See
 [`specs/005-control-protocol/contracts/control-subjects.md`](../specs/005-control-protocol/contracts/control-subjects.md).
+
+## Console (spec 006)
+
+`apsis-web` is an optional read-mostly operator console — a Leptos full-stack app (SSR +
+WASM hydration on axum) that is a **stateless projection of the spec 005 control plane**. It
+holds no database and no session: on each request it reads the `transcode_state` KV and, for
+actions, publishes the *same* control intents documented above. Constitution v3.0.0 bounds it
+deliberately — it may read only the spec 005 NATS surface and mutate only via control intents;
+it cannot edit config, and there is no privileged backdoor around the daemons.
+
+**What it shows**
+
+- **File table** (`/`) — every tracked file with its status, the *decision* (why a file was
+  skipped), whether it carries an ignore marker, and its job id while running. Polls every 3s.
+- **File detail** (`/file/<path>`) — the full KV `StateEntry`: status, version, attempts,
+  last write time, last error, and the decision.
+- **Live progress** (`/progress`, SSE) — relays `apsis.progress.>` (speed / eta / out-time)
+  for the running jobs.
+- **Actions** — context-dependent per-row buttons (cancel, retry, requeue, force, mark-done)
+  and a global pause/resume, each of which publishes the matching spec 005 intent.
+
+**Running it**
+
+```bash
+# dev: cargo-leptos serves SSR + hydration with hot reload (needs a reachable nats-server)
+NATS_URL=nats://127.0.0.1:4222 cargo leptos watch
+# it listens on 127.0.0.1:3000 (see [package.metadata.leptos] site-addr)
+```
+
+Environment: `NATS_URL` (default `nats://127.0.0.1:4222`), `APSIS_WEB_ADDR` /
+`LEPTOS_SITE_ADDR` for the bind address.
+
+**Authorization** — the console does *not* authenticate. Put it behind a reverse-proxy /
+forward-auth (oauth2-proxy, Traefik) that injects the authenticated user as
+`X-Forwarded-User` or `X-Auth-Request-User`; every server function and the SSE route require
+that header (absent → 401) before touching NATS. The NATS credentials the server itself uses
+should still be scoped exactly as the operator credentials above — the console is not a
+privilege-escalation path.
 
 ## Safety model (why it won't corrupt the library)
 
