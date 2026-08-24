@@ -1,5 +1,5 @@
 {
-  description = "pyflows — Media library transcoder with VAAPI hardware encoding";
+  description = "pyflows — media transcode engine packaged as an Unmanic plugin (VAAPI HEVC)";
 
   inputs = {
     nixpkgs.url = "github:nixos/nixpkgs/nixos-unstable";
@@ -9,6 +9,12 @@
     };
     treefmt-nix = {
       url = "github:numtide/treefmt-nix";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
+    # Rust toolchain with the wasm32 target for the Leptos console (spec 006);
+    # nixpkgs' rustc ships no wasm32-unknown-unknown std.
+    fenix = {
+      url = "github:nix-community/fenix";
       inputs.nixpkgs.follows = "nixpkgs";
     };
   };

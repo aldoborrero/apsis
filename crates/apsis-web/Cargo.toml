@@ -18,7 +18,9 @@ axum = { version = "0.8", optional = true }
 leptos_axum = { version = "0.8", optional = true }
 tokio = { version = "1", features = ["rt-multi-thread"], optional = true }
 console_error_panic_hook = { version = "0.1", optional = true }
-wasm-bindgen = { version = "0.2", optional = true }
+# Pinned to match the nixpkgs `wasm-bindgen-cli` in the dev shell (cargo-leptos needs an
+# exact version match between the crate and the CLI that generates the JS/WASM glue).
+wasm-bindgen = { version = "=0.2.121", optional = true }
 # apsis-common (control types, KvStateStore, connect) is wired in with the server functions.
 
 [features]
