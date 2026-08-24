@@ -56,3 +56,84 @@ fn status_str(s: apsis_common::Status) -> &'static str {
 fn err(e: apsis_common::StoreError) -> ServerFnError {
     ServerFnError::new(e.to_string())
 }
+
+/// Map any Display error to a `ServerFnError`.
+#[cfg(feature = "ssr")]
+fn sfe(e: impl std::fmt::Display) -> ServerFnError {
+    ServerFnError::new(e.to_string())
+}
+
+/// Publish a pause intent (spec 005 US1). `worker = None` → global; `hard` → abort in-flight.
+#[server]
+pub async fn pause(worker: Option<String>, hard: bool, set: bool) -> Result<(), ServerFnError> {
+    use apsis_common::control::{PauseIntent, PauseMode, PauseScope, SUBJECT_CONTROL_PAUSE};
+    use axum::Extension;
+    use leptos_axum::extract;
+    let Extension(state): Extension<ServerState> = extract().await?;
+    let intent = PauseIntent {
+        scope: worker.map_or(PauseScope::Global, PauseScope::Worker),
+        mode: if hard { PauseMode::Hard } else { PauseMode::Soft },
+        set,
+    };
+    let bytes = serde_json::to_vec(&intent).map_err(sfe)?;
+    state
+        .client
+        .publish(SUBJECT_CONTROL_PAUSE, bytes.into())
+        .await
+        .map_err(sfe)?;
+    Ok(())
+}
+
+/// Cancel the active transcode of `job_id` (spec 005 US2). Returns the owner's outcome.
+#[server]
+pub async fn cancel(job_id: String, ignore: bool) -> Result<String, ServerFnError> {
+    use apsis_common::control::{
+        CancelReply, CancelRequest, Disposition, SUBJECT_CONTROL_CANCEL,
+    };
+    use axum::Extension;
+    use leptos_axum::extract;
+    let Extension(state): Extension<ServerState> = extract().await?;
+    let req = CancelRequest {
+        job_id,
+        disposition: if ignore {
+            Disposition::Ignore
+        } else {
+            Disposition::Defer
+        },
+    };
+    let bytes = serde_json::to_vec(&req).map_err(sfe)?;
+    let reply = state
+        .client
+        .request(SUBJECT_CONTROL_CANCEL, bytes.into())
+        .await
+        .map_err(sfe)?;
+    let r: CancelReply = serde_json::from_slice(&reply.payload).map_err(sfe)?;
+    Ok(format!("{:?}", r.outcome))
+}
+
+/// A manual state op (spec 005 US3): `requeue` | `retry` | `mark_done` | `force`.
+#[server]
+pub async fn state_op(path: String, op: String) -> Result<String, ServerFnError> {
+    use apsis_common::control::{
+        StateControlReply, StateControlRequest, StateOp, SUBJECT_CONTROL_STATE,
+    };
+    use axum::Extension;
+    use leptos_axum::extract;
+    let op = match op.as_str() {
+        "requeue" => StateOp::Requeue,
+        "retry" => StateOp::Retry,
+        "mark_done" => StateOp::MarkDone,
+        "force" => StateOp::Force,
+        _ => return Err(ServerFnError::new(format!("unknown op {op:?}"))),
+    };
+    let Extension(state): Extension<ServerState> = extract().await?;
+    let req = StateControlRequest { path, op };
+    let bytes = serde_json::to_vec(&req).map_err(sfe)?;
+    let reply = state
+        .client
+        .request(SUBJECT_CONTROL_STATE, bytes.into())
+        .await
+        .map_err(sfe)?;
+    let r: StateControlReply = serde_json::from_slice(&reply.payload).map_err(sfe)?;
+    Ok(format!("{:?}", r.outcome))
+}
