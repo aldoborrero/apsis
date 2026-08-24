@@ -34,7 +34,7 @@ writes only spec 005 control intents; no config editing; no visual graph/editor.
 - [x] T008 [US1] `app.rs` + `components/`: `FileTable` (a `Resource` over `list_files`, ~3 s
   refetch), `StatusBadge`, `ProgressBar` fed by a `progress` signal off the `/progress`
   `EventSource`; the global pause indicator.
-- [ ] T009 [US1] Integration test (gated, live `nats-server`): `list_files` reflects seeded KV
+- [x] T009 [US1] Integration test (gated, live `nats-server`): `list_files` reflects seeded KV
   entries (status + decision + ignored); the SSE route forwards a published `ProgressEvent`.
 
 ## Phase 3: User Story 2 — Understand a decision (Priority: P2)
@@ -52,7 +52,7 @@ writes only spec 005 control intents; no config editing; no visual graph/editor.
 - [x] T013 [US3] `components/ActionButtons` + the pause control: context-dependent buttons
   (cancel for InProgress; requeue/force for Done; retry for Failed; mark-done; ignore-toggle);
   reflect the returned outcome; a down owner → visible retryable error (US3-3).
-- [ ] T014 [US3] Integration test (gated): each control button's server fn publishes the SAME
+- [x] T014 [US3] Integration test (gated): each control button's server fn publishes the SAME
   spec 005 intent the `nats` CLI does and yields the same state change (SC-003); a control call
   to a down owner surfaces the timeout.
 
