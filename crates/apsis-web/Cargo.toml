@@ -29,6 +29,9 @@ apsis-common = { path = "../apsis-common", optional = true }
 async-nats = { version = "0.42", optional = true }
 time = { version = "0.3", features = ["formatting"], optional = true }
 
+[dev-dependencies]
+tokio = { version = "1", features = ["rt", "macros"] }
+
 [features]
 default = ["ssr"]
 hydrate = ["leptos/hydrate", "dep:console_error_panic_hook", "dep:wasm-bindgen"]

@@ -3,6 +3,8 @@
 //! surface (reads KV/progress, publishes control intents) — no new backend.
 
 pub mod app;
+#[cfg(feature = "ssr")]
+pub mod auth;
 pub mod server;
 pub mod view;
 

@@ -20,6 +20,7 @@ pub async fn list_files() -> Result<Vec<FileRow>, ServerFnError> {
     use axum::Extension;
     use leptos_axum::extract;
 
+    let _user: crate::auth::ProxyUser = extract().await?;
     let Extension(state): Extension<ServerState> = extract().await?;
     let keys = state.kv.list_keys().await.map_err(err)?;
     let mut rows = Vec::with_capacity(keys.len());
@@ -48,6 +49,7 @@ pub async fn file_detail(path: String) -> Result<Option<FileDetail>, ServerFnErr
     use axum::Extension;
     use leptos_axum::extract;
 
+    let _user: crate::auth::ProxyUser = extract().await?;
     let Extension(state): Extension<ServerState> = extract().await?;
     let Some((e, _)) = state.kv.get(&path).await.map_err(err)? else {
         return Ok(None);
@@ -97,6 +99,7 @@ pub async fn pause(worker: Option<String>, hard: bool, set: bool) -> Result<(), 
     use apsis_common::control::{PauseIntent, PauseMode, PauseScope, SUBJECT_CONTROL_PAUSE};
     use axum::Extension;
     use leptos_axum::extract;
+    let _user: crate::auth::ProxyUser = extract().await?;
     let Extension(state): Extension<ServerState> = extract().await?;
     let intent = PauseIntent {
         scope: worker.map_or(PauseScope::Global, PauseScope::Worker),
@@ -120,6 +123,7 @@ pub async fn cancel(job_id: String, ignore: bool) -> Result<String, ServerFnErro
     };
     use axum::Extension;
     use leptos_axum::extract;
+    let _user: crate::auth::ProxyUser = extract().await?;
     let Extension(state): Extension<ServerState> = extract().await?;
     let req = CancelRequest {
         job_id,
@@ -154,6 +158,7 @@ pub async fn state_op(path: String, op: String) -> Result<String, ServerFnError>
         "force" => StateOp::Force,
         _ => return Err(ServerFnError::new(format!("unknown op {op:?}"))),
     };
+    let _user: crate::auth::ProxyUser = extract().await?;
     let Extension(state): Extension<ServerState> = extract().await?;
     let req = StateControlRequest { path, op };
     let bytes = serde_json::to_vec(&req).map_err(sfe)?;
