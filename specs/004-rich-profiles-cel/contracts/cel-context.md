@@ -17,11 +17,10 @@ by `apsis-engine` from the `Probe` + file facts, immediately before override res
 | `duration` | `double` | seconds | `0.0` if unknown |
 | `size` | `int` | bytes | file size |
 
-> **Implementation status (US2):** `duration` is currently always `0.0` — the probe
-> ingests `-show_streams` but not `-show_format`, so it does not yet carry container
-> duration. **Predicates on `duration` therefore evaluate against `0.0` and are inert**
-> (`duration < 300` is always true). Populating it (adding `-show_format` to the probe)
-> is a tracked follow-up; until then, do not gate rules on `duration`.
+> **Implementation status:** `duration` is live — the probe requests `-show_format` and
+> `parse_probe` reads `format.duration` into `Probe.duration`, which the coordinator passes to
+> the CEL facts. It is `0.0` only when ffprobe omits `format.duration` (rare); rules may gate
+> on it (`duration > 3600`).
 
 ## `Video`
 

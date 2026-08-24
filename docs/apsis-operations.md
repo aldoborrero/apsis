@@ -169,8 +169,9 @@ set  = { "audio.transcode" = { codec = "eac3", bitrate = "640k" } }
   counter `apsis_override_failed_total`), never the daemon — and, like any `Failed` file, is not
   retried until its `mtime:size` changes.
 
-> `duration` is currently always `0.0` (the probe reads streams, not container format) — do not
-> gate rules on it yet.
+> `duration` (seconds) comes from the probe's `format.duration` (`-show_format`); it is `0.0`
+> only when ffprobe omits it (rare — e.g. some raw streams). Rules may gate on it, e.g.
+> `duration > 3600`.
 
 ## Environment variables
 

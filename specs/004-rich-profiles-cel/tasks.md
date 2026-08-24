@@ -132,8 +132,8 @@ applied only to the match; effective = base + overrides (ordered, last-write-win
   computing a string field via CEL is NOT expressible (documented). cel→JSON via the `json` feature.
 - [x] T016 [US2] `crates/apsis-coordinator/src/reconcile.rs`: resolve the effective profile between
   probe and `plan()`; effective profile feeds skip-gates AND `Job.profile_config` (worker never
-  sees rules). No rules → fast path. **`duration` context field is 0.0** until the probe carries it
-  (contract: 0.0 = unknown) — small follow-up in probe.rs.
+  sees rules). No rules → fast path. **`duration`** now flows from the probe's `format.duration`
+  (`-show_format`) into the CEL facts (`0.0` only when ffprobe omits it).
 
 **Checkpoint**: US1 + US2 both work independently.
 
