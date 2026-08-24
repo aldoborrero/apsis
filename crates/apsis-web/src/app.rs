@@ -53,10 +53,7 @@ fn Console() -> impl IntoView {
 
     // Poll the file list every 3 s (client-only; the effect never runs during SSR).
     Effect::new(move |_| {
-        set_interval(
-            move || files.refetch(),
-            std::time::Duration::from_secs(3),
-        );
+        set_interval(move || files.refetch(), std::time::Duration::from_secs(3));
     });
 
     // A control op runs the server function, then refetches the file list.
@@ -152,7 +149,7 @@ fn FileDetailView() -> impl IntoView {
     // `path` is a wildcard segment, so it carries the full (possibly slashed) key.
     let detail = Resource::new(
         move || params.read().get("path").unwrap_or_default(),
-        |path| crate::server::file_detail(path),
+        crate::server::file_detail,
     );
     view! {
         <p><a href="/">"← all files"</a></p>

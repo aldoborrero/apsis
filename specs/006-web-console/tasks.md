@@ -62,7 +62,7 @@ writes only spec 005 control intents; no config editing; no visual graph/editor.
   bin + hashed site assets) + a NixOS module running it behind the proxy, mesh/LAN-only.
 - [x] T016 [P] `docs/apsis-operations.md`: a "Console" section (URL, what it shows, that it is
   removable, the auth/ingress).
-- [ ] T017 Gate: `cargo fmt && cargo clippy --workspace --all-targets -- -D warnings &&
+- [x] T017 Gate: `cargo fmt && cargo clippy --workspace --all-targets -- -D warnings &&
   cargo test --workspace`; `cargo-leptos build` succeeds; the console can be removed and control
   (CLI) + observability (Grafana) still work (SC-004).
 
