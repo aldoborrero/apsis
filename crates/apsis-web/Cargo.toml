@@ -70,6 +70,7 @@ ssr = [
 
 [package.metadata.leptos]
 output-name = "apsis-web"
+style-file = "style/apsis.css"
 site-root = "target/site"
 site-pkg-dir = "pkg"
 assets-dir = "public"
