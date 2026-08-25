@@ -167,6 +167,20 @@ fn i_done() -> impl IntoView {
 fn i_chevron() -> impl IntoView {
     view! { <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="m9 18 6-6-6-6"></path></svg> }
 }
+fn i_dots() -> impl IntoView {
+    view! { <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="1"></circle><circle cx="19" cy="12" r="1"></circle><circle cx="5" cy="12" r="1"></circle></svg> }
+}
+
+/// The open state of the per-row overflow (⋯) menu: which file, and where to anchor it.
+#[derive(Clone)]
+struct MenuState {
+    path: String,
+    base: String,
+    status: String,
+    job: Option<String>,
+    x: i32,
+    y: i32,
+}
 
 // ---- shared top bar ----------------------------------------------------------------------
 
@@ -230,6 +244,20 @@ fn subscribe_progress(progress: RwSignal<ProgressMap>) {
     std::mem::forget(es);
 }
 
+/// Close the overflow menu on any click that reaches `window` — i.e. anywhere but the ⋯ button
+/// (which stops propagation) or a menu item (which closes it itself). Client-only.
+#[cfg(feature = "hydrate")]
+fn close_menu_on_outside_click(menu: RwSignal<Option<MenuState>>) {
+    use wasm_bindgen::JsCast;
+    use wasm_bindgen::closure::Closure;
+    let Some(win) = web_sys::window() else {
+        return;
+    };
+    let cb = Closure::<dyn FnMut()>::new(move || menu.set(None));
+    let _ = win.add_event_listener_with_callback("click", cb.as_ref().unchecked_ref());
+    cb.forget();
+}
+
 // ---- the console (route `/`) -------------------------------------------------------------
 
 #[component]
@@ -241,12 +269,17 @@ fn Console() -> impl IntoView {
     let progress = RwSignal::<ProgressMap>::new(ProgressMap::new());
     let filter = RwSignal::<Option<String>>::new(None);
     let collapsed = RwSignal::<HashSet<String>>::new(HashSet::new());
+    let menu = RwSignal::<Option<MenuState>>::new(None);
 
-    // 3s poll + live progress subscription (client-only).
+    // 3s poll + live progress subscription + close the ⋯ menu on any outside click
+    // (client-only; the effect never runs during SSR).
     Effect::new(move |_| {
         set_interval(move || files.refetch(), std::time::Duration::from_secs(3));
         #[cfg(feature = "hydrate")]
-        subscribe_progress(progress);
+        {
+            subscribe_progress(progress);
+            close_menu_on_outside_click(menu);
+        }
     });
 
     // Control actions: run the server function, then refetch.
@@ -321,8 +354,35 @@ fn Console() -> impl IntoView {
             let p = r.path.clone();
             view! { <button class="ap-btn-icon" title="Probe now" on:click=move |_| run_state(p.clone(), "requeue")>{i_probe()}</button> }
         });
-        let p_force = r.path.clone();
-        let p_done = r.path.clone();
+        // The ⋯ menu opens at the click point and carries the row's identity.
+        let menu_path = r.path.clone();
+        let menu_base = base.clone();
+        let menu_status = status.clone();
+        let menu_job = r.job_id.clone();
+        let open_menu = move |ev: leptos::ev::MouseEvent| {
+            ev.stop_propagation();
+            let (x, y) = (ev.client_x(), ev.client_y());
+            let (p, b, s, j) = (
+                menu_path.clone(),
+                menu_base.clone(),
+                menu_status.clone(),
+                menu_job.clone(),
+            );
+            menu.update(move |cur| {
+                if cur.as_ref().is_some_and(|c| c.path == p) {
+                    *cur = None;
+                } else {
+                    *cur = Some(MenuState {
+                        path: p,
+                        base: b,
+                        status: s,
+                        job: j,
+                        x,
+                        y,
+                    });
+                }
+            });
+        };
 
         view! {
             <tr class="ap-row">
@@ -348,8 +408,7 @@ fn Console() -> impl IntoView {
                         {retry_btn}
                         {requeue_btn}
                         {probe_btn}
-                        <button class="ap-btn-icon ap-btn-danger" title="Force transcode" on:click=move |_| run_state(p_force.clone(), "force")>{i_force()}</button>
-                        <button class="ap-btn-icon" title="Mark done" on:click=move |_| run_state(p_done.clone(), "mark_done")>{i_done()}</button>
+                        <button class="ap-btn-icon ap-menu-btn" title="More actions" aria-haspopup="menu" on:click=open_menu>{i_dots()}</button>
                     </div>
                 </td>
             </tr>
@@ -399,6 +458,8 @@ fn Console() -> impl IntoView {
                     })}
                 </Suspense>
             </main>
+            // the overflow (⋯) menu — a single fixed popup driven by the `menu` signal
+            {move || menu.get().map(|m| overflow_menu(m, run_state, run_cancel, menu))}
         </div>
     }
 }
@@ -543,6 +604,60 @@ fn foot_note(data: &[crate::view::FileRow], filter: RwSignal<Option<String>>) ->
     format!("{shown} of {total} files shown{filtered} · click a path for detail")
 }
 
+/// The overflow (⋯) menu popup for one row: the contextual action + Force / Mark done /
+/// Open detail, anchored at the click point. Every item runs its server intent and closes.
+fn overflow_menu<S, C>(
+    m: MenuState,
+    run_state: S,
+    run_cancel: C,
+    menu: RwSignal<Option<MenuState>>,
+) -> AnyView
+where
+    S: Fn(String, &'static str) + Copy + 'static,
+    C: Fn(String) + Copy + 'static,
+{
+    let mut items: Vec<AnyView> = Vec::new();
+    match m.status.as_str() {
+        "InProgress" => {
+            let job = m.job.clone().unwrap_or_default();
+            items.push(
+                view! {
+                    <button class="ap-menu-item is-danger" role="menuitem"
+                        on:click=move |_| { run_cancel(job.clone()); menu.set(None); }>"Cancel"</button>
+                }
+                .into_any(),
+            );
+        }
+        "Failed" => {
+            let p = m.path.clone();
+            items.push(view! { <button class="ap-menu-item" role="menuitem" on:click=move |_| { run_state(p.clone(), "retry"); menu.set(None); }>"Retry"</button> }.into_any());
+        }
+        "Done" => {
+            let p = m.path.clone();
+            items.push(view! { <button class="ap-menu-item" role="menuitem" on:click=move |_| { run_state(p.clone(), "requeue"); menu.set(None); }>"Requeue"</button> }.into_any());
+        }
+        "Unknown" => {
+            let p = m.path.clone();
+            items.push(view! { <button class="ap-menu-item" role="menuitem" on:click=move |_| { run_state(p.clone(), "requeue"); menu.set(None); }>"Probe now"</button> }.into_any());
+        }
+        _ => {}
+    }
+    let pf = m.path.clone();
+    items.push(view! { <button class="ap-menu-item is-danger" role="menuitem" on:click=move |_| { run_state(pf.clone(), "force"); menu.set(None); }>"Force transcode"</button> }.into_any());
+    let pd = m.path.clone();
+    items.push(view! { <button class="ap-menu-item" role="menuitem" on:click=move |_| { run_state(pd.clone(), "mark_done"); menu.set(None); }>"Mark done"</button> }.into_any());
+    items.push(view! { <a class="ap-menu-item" role="menuitem" href=format!("/file/{}", m.path)>"Open detail"</a> }.into_any());
+
+    let style = format!("top:{}px;left:{}px", m.y + 6, m.x);
+    view! {
+        <div class="ap-menu" role="menu" style=style>
+            <div class="ap-menu-head">{m.base}</div>
+            {items.into_iter().collect_view()}
+        </div>
+    }
+    .into_any()
+}
+
 // ---- the file detail (route `/file/<path>`) ----------------------------------------------
 
 /// The per-file detail view (spec 006 US2): why a file is in its state.
@@ -561,8 +676,36 @@ fn FileDetailView() -> impl IntoView {
                     {move || Suspend::new(async move {
                         match detail.await {
                             Ok(Some(d)) => {
+                                use leptos::task::spawn_local;
                                 let (dir, base) = split_path(&d.path);
                                 let pill_class = format!("ap-pill {}", status_mod(&d.status));
+                                let status = d.status.clone();
+                                let path = d.path.clone();
+                                let job = d.job_id.clone().unwrap_or_default();
+                                // Detail actions run the intent, then refetch this file's state.
+                                let run = move |p: String, op: &'static str| {
+                                    spawn_local(async move {
+                                        let _ = crate::server::state_op(p, op.to_string()).await;
+                                        detail.refetch();
+                                    });
+                                };
+                                let run_cancel = move |j: String| {
+                                    spawn_local(async move {
+                                        let _ = crate::server::cancel(j, false).await;
+                                        detail.refetch();
+                                    });
+                                };
+                                let ctx_btn = match status.as_str() {
+                                    "InProgress" => Some(view! {
+                                        <button class="ap-btn-ghost ap-btn-danger" on:click=move |_| run_cancel(job.clone())>{i_x()}"Cancel"</button>
+                                    }.into_any()),
+                                    "Failed" => { let p = path.clone(); Some(view! { <button class="ap-btn-ghost" on:click=move |_| run(p.clone(), "retry")>{i_retry()}"Retry"</button> }.into_any()) }
+                                    "Done" => { let p = path.clone(); Some(view! { <button class="ap-btn-ghost" on:click=move |_| run(p.clone(), "requeue")>{i_requeue()}"Requeue"</button> }.into_any()) }
+                                    "Unknown" => { let p = path.clone(); Some(view! { <button class="ap-btn-ghost" on:click=move |_| run(p.clone(), "requeue")>{i_probe()}"Probe now"</button> }.into_any()) }
+                                    _ => None,
+                                };
+                                let p_force = path.clone();
+                                let p_done = path.clone();
                                 view! {
                                     <a class="ap-back" href="/">"← all files"</a>
                                     <h1 class="ap-title">
@@ -592,6 +735,11 @@ fn FileDetailView() -> impl IntoView {
                                             }}
                                         </dd>
                                     </dl>
+                                    <div class="ap-actions-detail">
+                                        {ctx_btn}
+                                        <button class="ap-btn-ghost ap-btn-danger" on:click=move |_| run(p_force.clone(), "force")>{i_force()}"Force transcode"</button>
+                                        <button class="ap-btn-ghost" on:click=move |_| run(p_done.clone(), "mark_done")>{i_done()}"Mark done"</button>
+                                    </div>
                                 }
                                 .into_any()
                             }
