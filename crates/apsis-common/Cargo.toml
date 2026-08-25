@@ -20,6 +20,7 @@ humantime = "2"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 async-nats = "0.42"
+base64 = "0.22"
 futures = "0.3"
 async-trait = "0.1"
 bytes = "1"

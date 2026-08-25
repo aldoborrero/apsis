@@ -241,8 +241,13 @@ nats req apsis.control.state '{"path":"/hdd/media/tv/x.mkv","op":"mark_done"}'  
 **Introspection** — the per-file state (incl. the *decision*: why it was skipped) is in the
 KV; live progress is on a per-job subject.
 
+KV **keys are the file path base64url-encoded** (no padding) — NATS KV rejects the spaces,
+parentheses, apostrophes, `&`, … that media names carry, so apsis encodes them. To read one by
+hand, encode the path first (the Console does this for you):
+
 ```bash
-nats kv get transcode_state /hdd/media/tv/x.mkv      # status + decision (why skipped)
+key=$(printf %s '/hdd/media/tv/x.mkv' | basenc --base64url | tr -d '=')
+nats kv get transcode_state "$key"                    # status + decision (why skipped)
 nats sub 'apsis.progress.>'                            # live {speed, eta_s, out_time_s}
 ```
 

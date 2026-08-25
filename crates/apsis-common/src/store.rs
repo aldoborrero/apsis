@@ -9,10 +9,29 @@ use std::sync::{Arc, Mutex};
 use async_nats::jetstream::Context;
 use async_nats::jetstream::kv::{CreateErrorKind, Operation, Store, UpdateErrorKind};
 use async_trait::async_trait;
+use base64::Engine as _;
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use bytes::Bytes;
 use thiserror::Error;
 
 use crate::schema::{Job, StateEntry};
+
+/// NATS KV keys are restricted to `[-/_=.a-zA-Z0-9]` (they become subject tokens), but media
+/// paths routinely carry spaces, parentheses, apostrophes, commas, `&`, … — all of which the
+/// broker rejects with `invalid key`. Encoding the path as base64url (no padding) maps any
+/// path to a valid, reversible key: the alphabet `A–Z a–z 0–9 - _` is a strict subset of the
+/// allowed set, and no `/`/`.`/`=` is ever emitted. Keys self-heal (the coordinator rescans
+/// the filesystem), so there is no stored data to migrate.
+fn encode_key(path: &str) -> String {
+    URL_SAFE_NO_PAD.encode(path.as_bytes())
+}
+
+/// Inverse of [`encode_key`]; `None` for a key that isn't our base64url encoding (e.g. a
+/// stray/legacy key), so [`KvStateStore::list_keys`] can skip it rather than surface garbage.
+fn decode_key(key: &str) -> Option<String> {
+    let bytes = URL_SAFE_NO_PAD.decode(key.as_bytes()).ok()?;
+    String::from_utf8(bytes).ok()
+}
 
 #[derive(Debug, Error)]
 #[non_exhaustive]
@@ -105,8 +124,8 @@ impl KvStateStore {
         }
     }
 
-    /// Every file-path key in the bucket (excludes the `__control__/*` control keys).
-    /// Used by the read-only console (spec 006) to list tracked files.
+    /// Every tracked file path in the bucket, decoded back from its base64url key (excludes
+    /// the `__control__/*` control keys). Used by the read-only console (spec 006).
     ///
     /// # Errors
     /// Backend failure.
@@ -121,9 +140,12 @@ impl KvStateStore {
             .try_collect()
             .await
             .map_err(|e| StoreError::Backend(e.into()))?;
+        // Control keys carry a `/` (never emitted by base64url), so this prefix can't clip a
+        // real file key; everything else decodes from base64url back to its path.
         Ok(all
             .into_iter()
-            .filter(|k| !k.starts_with("__control__"))
+            .filter(|k| !k.starts_with("__control__/"))
+            .filter_map(|k| decode_key(&k))
             .collect())
     }
 
@@ -146,7 +168,7 @@ impl StateStore for KvStateStore {
     async fn get(&self, key: &str) -> Result<Option<(StateEntry, u64)>, StoreError> {
         let entry = self
             .0
-            .entry(key)
+            .entry(encode_key(key))
             .await
             .map_err(|e| StoreError::Backend(e.into()))?;
         match entry {
@@ -159,7 +181,7 @@ impl StateStore for KvStateStore {
 
     async fn create(&self, key: &str, entry: &StateEntry) -> Result<u64, StoreError> {
         let bytes = to_bytes(entry)?;
-        self.0.create(key, bytes).await.map_err(|e| {
+        self.0.create(encode_key(key), bytes).await.map_err(|e| {
             if e.kind() == CreateErrorKind::AlreadyExists {
                 StoreError::Conflict(key.to_string())
             } else {
@@ -175,26 +197,29 @@ impl StateStore for KvStateStore {
         revision: u64,
     ) -> Result<u64, StoreError> {
         let bytes = to_bytes(entry)?;
-        self.0.update(key, bytes, revision).await.map_err(|e| {
-            if e.kind() == UpdateErrorKind::WrongLastRevision {
-                StoreError::Conflict(key.to_string())
-            } else {
-                StoreError::Backend(e.into())
-            }
-        })
+        self.0
+            .update(encode_key(key), bytes, revision)
+            .await
+            .map_err(|e| {
+                if e.kind() == UpdateErrorKind::WrongLastRevision {
+                    StoreError::Conflict(key.to_string())
+                } else {
+                    StoreError::Backend(e.into())
+                }
+            })
     }
 
     async fn put(&self, key: &str, entry: &StateEntry) -> Result<u64, StoreError> {
         let bytes = to_bytes(entry)?;
         self.0
-            .put(key, bytes)
+            .put(encode_key(key), bytes)
             .await
             .map_err(|e| StoreError::Backend(e.into()))
     }
 
     async fn delete(&self, key: &str) -> Result<(), StoreError> {
         self.0
-            .delete(key)
+            .delete(encode_key(key))
             .await
             .map_err(|e| StoreError::Backend(e.into()))
     }
@@ -483,6 +508,30 @@ mod tests {
             .unwrap(),
             enqueued_at: OffsetDateTime::UNIX_EPOCH,
         }
+    }
+
+    #[test]
+    fn key_encoding_round_trips_and_is_kv_safe() {
+        // Real-world media names: spaces, parens, apostrophes, commas, ampersands, brackets.
+        let paths = [
+            "/hdd/media/movies/Dune (2021)/Dune.mkv",
+            "/hdd/media/tv/It's Always Sunny/S01E01.mkv",
+            "/hdd/media/movies/Crouching Tiger, Hidden Dragon/x.mkv",
+            "/hdd/media/tv/Tom & Jerry/[1080p] ep.mkv",
+            "/plain/ascii.mkv",
+        ];
+        for p in paths {
+            let k = encode_key(p);
+            assert_eq!(decode_key(&k).as_deref(), Some(p), "round-trips: {p}");
+            // Only NATS-KV-legal characters (a strict subset of `[-/_=.a-zA-Z0-9]`).
+            assert!(
+                k.bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_'),
+                "key is KV-safe: {k}"
+            );
+        }
+        // A non-base64 key (e.g. a control key) decodes to None rather than panicking.
+        assert_eq!(decode_key("__control__/pause"), None);
     }
 
     #[tokio::test]
