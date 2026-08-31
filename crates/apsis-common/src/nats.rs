@@ -60,12 +60,38 @@ impl ConsumerTuning {
 /// Connect to NATS; return the core client (for fire-and-forget result events)
 /// and a `JetStream` context (for the stream/KV/consumer).
 ///
+/// Credentials embedded in the URL (`nats://user:pass@host`) are honored:
+/// async-nats' `ServerAddr` parser ignores URL userinfo (unlike the `nats` CLI),
+/// so we extract `user:pass` and pass it explicitly via `ConnectOptions`, then
+/// connect to the credential-stripped address.
+///
 /// # Errors
 /// Connection failure.
 pub async fn connect(url: &str) -> Result<(async_nats::Client, Context), async_nats::Error> {
-    let client = async_nats::connect(url).await?;
+    let client = match split_userinfo(url) {
+        Some((addr, user, pass)) => {
+            async_nats::ConnectOptions::with_user_and_password(user, pass)
+                .connect(addr)
+                .await?
+        }
+        None => async_nats::connect(url).await?,
+    };
     let ctx = jetstream::new(client.clone());
     Ok((client, ctx))
+}
+
+/// Split `nats://user:pass@host:port` into (`nats://host:port`, user, pass), or `None` when the
+/// URL carries no `user:pass@` userinfo. Only the `user:pass` form is handled (the shared broker
+/// uses password auth); a bare `user@` or token is left to async-nats.
+fn split_userinfo(url: &str) -> Option<(String, String, String)> {
+    let (scheme, rest) = url.split_once("://")?;
+    let at = rest.find('@')?;
+    let (userinfo, host) = (&rest[..at], &rest[at + 1..]);
+    let (user, pass) = userinfo.split_once(':')?;
+    if user.is_empty() || pass.is_empty() {
+        return None;
+    }
+    Some((format!("{scheme}://{host}"), user.to_string(), pass.to_string()))
 }
 
 fn pull_config(tuning: &ConsumerTuning) -> pull::Config {
@@ -151,4 +177,31 @@ pub async fn bind_job_consumer(
         .get_or_create_consumer(CONSUMER_NAME, pull_config(tuning))
         .await?;
     Ok(consumer)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::split_userinfo;
+
+    #[test]
+    fn extracts_user_pass_and_strips_userinfo() {
+        let got = split_userinfo("nats://cfleet:s3cr3t@192.168.120.30:4222");
+        assert_eq!(
+            got,
+            Some((
+                "nats://192.168.120.30:4222".into(),
+                "cfleet".into(),
+                "s3cr3t".into()
+            ))
+        );
+    }
+
+    #[test]
+    fn no_userinfo_returns_none() {
+        assert_eq!(split_userinfo("nats://127.0.0.1:4222"), None);
+        // a bare user (no password) is left to async-nats
+        assert_eq!(split_userinfo("nats://user@host:4222"), None);
+        // empty halves are not credentials
+        assert_eq!(split_userinfo("nats://:@host:4222"), None);
+    }
 }
