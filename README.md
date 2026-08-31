@@ -1,13 +1,19 @@
-# apsis
+<p align="center">
+  <img src="docs/assets/banner.svg" alt="apsis — distributed media-transcode scheduler" width="860"/>
+</p>
+
+<p align="center">
+  <a href="#license"><img src="https://img.shields.io/badge/License-MIT-blue.svg" alt="License: MIT"/></a>
+  <img src="https://img.shields.io/badge/rust-edition%202024-orange.svg" alt="Rust edition 2024"/>
+  <img src="https://img.shields.io/badge/status-feature--complete%20%C2%B7%20pilot-yellow.svg" alt="status: feature-complete, pilot"/>
+</p>
+
+---
 
 **A thin, distributed media-transcode scheduler in Rust.** A central coordinator
 walks your media libraries and decides *whether* and *how* to transcode; a pool of
 workers pull those decisions and do the work — verify, then atomically replace the
 original. Jobs carry only metadata; the media stays on shared storage.
-
-[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](#license)
-![Rust](https://img.shields.io/badge/rust-edition%202024-orange.svg)
-![status](https://img.shields.io/badge/status-feature--complete%20%C2%B7%20pilot-yellow.svg)
 
 apsis is a FOSS successor to [Unmanic](https://github.com/Unmanic/unmanic) for the
 homelab. The transcode *brain* (probe → plan → ffmpeg command, tuned for AMD VAAPI)
