@@ -1,32 +1,15 @@
-# Example pyflows config for the Unmanic plugin.
-#
-# The plugin reads this (or whatever PYFLOWS_UNMANIC_CONFIG points at) and uses
-# the `libraries` (path + profile) to pick a profile per file. The library
-# `path`s MUST match what Unmanic sees on disk (e.g. how the media is mounted in
-# the Unmanic container/LXC), which may differ from the pyflows daemon's mounts.
-#
-# `general.temp_dir`/`db_path` are required by the pyflows schema but unused by
-# the plugin (Unmanic owns the cache + queue) — any valid paths satisfy it.
+# Example: the live config of the rhea deployment (CT 2004), without anything secret.
+# Library paths must match what Unmanic sees on disk.
+# pyflows profiles used by the Unmanic pyflows_transcode plugin.
+# Profiles are copied verbatim from the homelab pyflows config so output policy
+# matches exactly. The plugin selects a profile from the file path, so the
+# libraries section is intentionally empty.
 general:
   temp_dir: /tmp/pyflows-unmanic
   db_path: /tmp/pyflows-unmanic.db
   vaapi_device: /dev/dri/renderD128
   ffmpeg_path: /usr/lib/jellyfin-ffmpeg/ffmpeg
   ffprobe_path: /usr/lib/jellyfin-ffmpeg/ffprobe
-
-libraries:
-  - name: Movies
-    path: /media/movies
-    profile: movie
-  - name: TV Shows
-    path: /media/tv-shows
-    profile: tv
-  - name: Anime
-    path: /media/anime
-    profile: anime
-  - name: Documentaries
-    path: /media/documentaries
-    profile: documentary
 
 profiles:
   tv:
@@ -42,13 +25,19 @@ profiles:
       default_language: eng
       priority: [eng, spa, jpn]
       remove_commentary: true
-      add_stereo: {codec: aac, bitrate: 128, channels: 2, languages: [eng, spa, jpn]}
+      add_stereo:
+        codec: aac
+        bitrate: 128
+        channels: 2
+        languages: [eng, spa, jpn]
       preserve_surround: true
     subtitles:
       keep_languages: [eng, spa, jpn]
       remove_formats: [pgs, dvd_subtitle, hdmv_pgs_subtitle]
       remove_commentary: true
-    output: {container: mkv, replace_original: true}
+    output:
+      container: mkv
+      replace_original: true
 
   anime:
     video:
@@ -63,13 +52,19 @@ profiles:
       default_language: jpn
       priority: [jpn, eng, spa]
       remove_commentary: true
-      add_stereo: {codec: aac, bitrate: 192, channels: 2, languages: [jpn, eng, spa]}
+      add_stereo:
+        codec: aac
+        bitrate: 192
+        channels: 2
+        languages: [jpn, eng, spa]
       preserve_surround: true
     subtitles:
       keep_languages: [eng, spa, jpn]
       remove_formats: [pgs, dvd_subtitle, hdmv_pgs_subtitle]
       remove_commentary: true
-    output: {container: mkv, replace_original: true}
+    output:
+      container: mkv
+      replace_original: true
 
   movie:
     video:
@@ -84,13 +79,19 @@ profiles:
       default_language: eng
       priority: [eng, spa, jpn]
       remove_commentary: true
-      add_stereo: {codec: aac, bitrate: 128, channels: 2, languages: [eng, spa, jpn]}
+      add_stereo:
+        codec: aac
+        bitrate: 128
+        channels: 2
+        languages: [eng, spa, jpn]
       preserve_surround: true
     subtitles:
       keep_languages: [eng, spa, jpn]
       remove_formats: [pgs, dvd_subtitle, hdmv_pgs_subtitle]
       remove_commentary: true
-    output: {container: mkv, replace_original: true}
+    output:
+      container: mkv
+      replace_original: true
 
   documentary:
     video:
@@ -105,11 +106,31 @@ profiles:
       default_language: eng
       priority: [eng, spa]
       remove_commentary: true
-      add_stereo: {codec: aac, bitrate: 128, channels: 2, languages: [eng, spa]}
+      add_stereo:
+        codec: aac
+        bitrate: 128
+        channels: 2
+        languages: [eng, spa]
       preserve_surround: true
     subtitles:
       keep_languages: [eng, spa]
       default_language: eng
       remove_formats: [pgs, dvd_subtitle, hdmv_pgs_subtitle]
       remove_commentary: true
-    output: {container: mkv, replace_original: true}
+    output:
+      container: mkv
+      replace_original: true
+
+libraries:
+  - name: Movies
+    path: /hdd-media/movies
+    profile: movie
+  - name: TV Shows
+    path: /hdd-media/tv-shows
+    profile: tv
+  - name: Anime
+    path: /hdd-media/anime
+    profile: anime
+  - name: Documentaries
+    path: /hdd-media/documentaries
+    profile: documentary
