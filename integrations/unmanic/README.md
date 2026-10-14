@@ -2,8 +2,25 @@
 
 A thin [Unmanic](https://github.com/Unmanic/unmanic) plugin that drives the
 **pyflows** transcode engine, so Unmanic's scanner/queue/worker produce the
-exact same output as the pyflows daemon. It reuses pyflows' own
-`plan_file()` and `build_encode_command()` — no duplicated logic.
+exact same output as the pyflows daemon. The engine (config, probe, plan, command,
+ffmpeg, audio, subtitles) ships **inside the plugin** as `_engine/`, so Unmanic needs no
+`pyflows` install — only the engine's own deps (pydantic v2, pyyaml) in `site-packages/`.
+
+This directory is what runs on the rhea deployment (Unmanic CT 2004), brought back
+from the container in October 2026. It adds over the June version:
+
+- `_engine/command.py`: builds the ffmpeg command. On `hevc_vaapi`/`h264_vaapi` it sets
+  **`sei=hdr`**, dropping the `a53_cc` SEI that re-embedded closed captions on every frame
+  and slowed VAAPI encodes ~20–40× (HDR mastering/CLL SEI is kept).
+- Closed-caption recovery (`_extract_closed_captions` in `plugin.py`): CEA-608/708 captions
+  saved as an extra English ASS track, since `sei=hdr` drops them from the video.
+  **Parked** — see the note in `plugin.py`.
+- ASS font attachments are carried over (`copy_attachments`).
+- Untagged tracks (`""`/`und`) are titled "Unknown" on both mp4 and mkv, so a remuxed
+  file is not re-queued forever.
+
+`_engine/` is a trimmed copy of `pyflows/` (no daemon, DB or concurrency settings) with
+these changes not yet folded back into `pyflows/`.
 
 Per file it:
 1. picks the pyflows **profile** by which configured library the file lives under,
@@ -18,10 +35,9 @@ Non-video files (`.nfo/.jpg/.srt/...`) are ignored.
    ```
    <unmanic-config>/plugins/pyflows_transcode/
    ```
-2. Make `pyflows` importable in Unmanic's Python — either:
-   - `pip install <pyflows>` into the Unmanic environment, **or**
-   - `pip install --target plugins/pyflows_transcode/site-packages <pyflows>`
-     (the plugin adds a sibling `site-packages/` to `sys.path` if present).
+2. Install the engine's deps for Unmanic's Python (match its version — compiled wheels):
+   `pip install --target plugins/pyflows_transcode/site-packages 'pydantic>=2' pyyaml`
+   (the plugin adds a sibling `site-packages/` to `sys.path`).
 3. Provide a pyflows `config.yaml`. By default the plugin reads
    `config.yaml` next to `plugin.py`; override with the env var
    `PYFLOWS_UNMANIC_CONFIG=/path/to/config.yaml`. Start from
