@@ -112,6 +112,13 @@ def build_encode_command_from_plan(
         cmd.set_metadata(cc_idx, "title", "Closed Captions")
         cmd.set_disposition(cc_idx, "0")  # never the default track
 
+    # --- Attachments (ASS fonts) ---
+    # Styled ASS subtitles (anime fansubs) reference fonts embedded as Matroska
+    # attachments. Without mapping them the kept ASS track falls back to the
+    # player's default font. Only Matroska can hold them.
+    if profile.output.container.strip().lstrip(".").lower() == "mkv":
+        cmd.copy_attachments()
+
     cmd.set_output(plan.output.output_path)
     return cmd
 

@@ -144,6 +144,7 @@ class FFmpegCommand:
     _input_codec: str | None = None
     _ffmpeg_path: str = "ffmpeg"
     _output: str = ""
+    _copy_attachments: bool = False
 
     def set_vaapi_device(self, device: str) -> None:
         self._vaapi_device = device
@@ -190,6 +191,14 @@ class FFmpegCommand:
 
     def set_output(self, path: str) -> None:
         self._output = path
+
+    def copy_attachments(self) -> None:
+        """Carry the first input's attachments (ASS fonts) over unchanged.
+
+        Attachments sit outside the per-type v/a/s indexing, so they are mapped
+        with an optional ``0:t?`` (a source without any is not an error).
+        """
+        self._copy_attachments = True
 
     def _use_hw_decode(self) -> bool:
         """Return True if the input codec supports reliable VAAPI HW decode."""
@@ -239,6 +248,8 @@ class FFmpegCommand:
         # Stream mappings
         for spec, _, _ in self._maps:
             args += ["-map", spec]
+        if self._copy_attachments:
+            args += ["-map", "0:t?"]
 
         # Video filter
         if self._vaapi_device and not self._use_hw_decode():
@@ -255,6 +266,8 @@ class FFmpegCommand:
             args += [f"-c:{stype}:{type_idx}", codec]
             for k, v in opts.items():
                 args += [f"-{k}:{stype}:{type_idx}", str(v)]
+        if self._copy_attachments:
+            args += ["-c:t", "copy"]
 
         # Metadata (using per-type indices)
         for idx, key, value in self._metadata:

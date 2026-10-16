@@ -3,7 +3,7 @@
     "compatibility": [
         2
     ],
-    "description": "Transcode media exactly like pyflows by reusing pyflows' own plan + ffmpeg command builder (VAAPI HEVC 10-bit, keep eng/spa/jpn audio+subs, remove commentary, add AAC stereo preserving surround, reorder by priority, drop image subtitles). Profile is chosen from the file path.",
+    "description": "Transcode media with the embedded pyflows engine (VAAPI HEVC 10-bit with CPU fallback, video stream-copied when already HEVC, keep eng/spa/jpn audio+subs, remove commentary, add AAC stereo preserving surround, reorder by priority, drop image subtitles, keep ASS font attachments). Profile is chosen from the file path.",
     "id": "pyflows_transcode",
     "name": "pyflows Transcode",
     "priorities": {
@@ -11,5 +11,5 @@
         "on_worker_process": 5
     },
     "tags": "video,ffmpeg,pyflows",
-    "version": "0.1.0"
+    "version": "0.3.0"
 }

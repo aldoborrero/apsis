@@ -199,6 +199,12 @@ def on_worker_process(data):
         if profile is None:
             return data
 
+        # Sonarr/Radarr can replace a queued file (upgrade, .mp4 → .mkv import)
+        # before a worker reaches it; ffprobe then fails with a traceback.
+        if not os.path.isfile(file_in):
+            logger.warning("Source vanished before processing, skipping: '%s'", file_in)
+            return data
+
         probe = probe_file(file_in, ffprobe_path=FFPROBE)
         plan = plan_file(file_in, profile, ffprobe_path=FFPROBE)
         if plan.should_skip:

@@ -142,9 +142,11 @@ def _track_title(language: str, codec: str, channels: int) -> str:
     # An untagged track probes as "und" from mp4 but as "" once remuxed to mkv
     # (Matroska omits the default "und"). Title both like the mkv side, or the
     # title written from the mp4 never matches again and the file is re-queued.
-    if language == "und":
-        language = ""
-    lang = LANGUAGE_NAMES.get(language, language.upper())
+    # Both get the same readable name instead of an empty " / AAC / Stereo".
+    if language in ("", "und"):
+        lang = "Unknown"
+    else:
+        lang = LANGUAGE_NAMES.get(language, language.upper())
     ch = CHANNEL_NAMES.get(channels, f"{channels}ch")
     return f"{lang} / {codec.upper()} / {ch}"
 
