@@ -1,9 +1,9 @@
 # pyflows Transcode — Unmanic plugin
 
-A thin [Unmanic](https://github.com/Unmanic/unmanic) plugin that drives the
-**pyflows** transcode engine, so Unmanic's scanner/queue/worker produce the
-exact same output as the pyflows daemon. It reuses pyflows' own
-`plan_file()` and `build_encode_command()` — no duplicated logic.
+An [Unmanic](https://github.com/Unmanic/unmanic) plugin carrying the **pyflows**
+transcode engine. The planning and ffmpeg-command logic is embedded in `_engine/`
+(no pyflows install needed); Unmanic supplies the scanner, queue, worker and
+post-processor.
 
 Per file it:
 1. picks the pyflows **profile** by which configured library the file lives under,
@@ -12,16 +12,21 @@ Per file it:
 
 Non-video files (`.nfo/.jpg/.srt/...`) are ignored.
 
+A file whose video is already in `skip_codecs` (e.g. HEVC) is still processed when
+its audio or subtitles do not match the profile: the video is stream-copied and
+only the audio/subtitle tracks are normalised. With an mkv output the source's
+attachments (ASS fonts) are copied along.
+
 ## Install
 
 1. Copy this directory into Unmanic's plugins dir as `pyflows_transcode`:
    ```
    <unmanic-config>/plugins/pyflows_transcode/
    ```
-2. Make `pyflows` importable in Unmanic's Python — either:
-   - `pip install <pyflows>` into the Unmanic environment, **or**
-   - `pip install --target plugins/pyflows_transcode/site-packages <pyflows>`
-     (the plugin adds a sibling `site-packages/` to `sys.path` if present).
+2. Make the engine's deps (`pydantic>=2`, `pyyaml`) importable. Debian's system
+   Python blocks `pip` (PEP 668) and ships pydantic v1, so vendor them next to the
+   plugin: `pip install --target plugins/pyflows_transcode/site-packages pydantic pyyaml`
+   (the plugin adds a sibling `site-packages/` to `sys.path` if present).
 3. Provide a pyflows `config.yaml`. By default the plugin reads
    `config.yaml` next to `plugin.py`; override with the env var
    `PYFLOWS_UNMANIC_CONFIG=/path/to/config.yaml`. Start from
@@ -45,6 +50,14 @@ Optional env: `PYFLOWS_FFMPEG`, `PYFLOWS_FFPROBE` (default: jellyfin-ffmpeg).
 - **Audio safety:** pyflows never drops *all* audio — if no track matches a
   profile's `keep_languages` (e.g. untagged `und` audio), it keeps the original
   tracks rather than emitting a video-only file.
+
+## Tests
+
+```
+pytest integrations/unmanic/tests
+```
+
+Needs `pydantic` and `pyyaml`; the tests import `_engine` directly, not Unmanic.
 
 ## Not handled here
 

@@ -1,0 +1,103 @@
+# nix/packages/pyflows/pyflows/audio.py
+"""Audio track selection, filtering, and stereo track creation."""
+
+from dataclasses import dataclass
+from typing import Literal
+
+from .config import AudioConfig
+from .constants import COMMENTARY_PATTERN, spanish_variant
+from .probe import StreamInfo
+
+# Within Spanish, Castilian first (the default for a Spain household), then an
+# untagged dub, then Latin American.
+_SPANISH_VARIANT_RANK = {"Spain": 0, None: 1, "Latin America": 2}
+
+
+def _variant_rank(stream: StreamInfo) -> int:
+    if stream.language != "spa":
+        return 0
+    return _SPANISH_VARIANT_RANK[spanish_variant(stream.title)]
+
+AudioActionType = Literal["copy", "encode"]
+
+
+@dataclass
+class AudioAction:
+    stream: StreamInfo
+    action: AudioActionType
+    codec: str = ""
+    channels: int = 0
+    bitrate: int = 0
+    source_index: int = 0  # input stream index for encode source
+
+
+def build_audio_plan(
+    streams: list[StreamInfo], config: AudioConfig
+) -> list[AudioAction]:
+    """Build an ordered list of audio actions from probe data and config.
+
+    Returns a list of AudioAction describing each output audio track:
+    copy (passthrough original) or encode (new AAC stereo).
+    """
+    # 1. Filter to keep_languages (empty = keep all)
+    if config.keep_languages:
+        kept = [s for s in streams if s.language in config.keep_languages]
+        # Safety: never drop ALL audio. If no stream matches the keep list
+        # (e.g. untagged 'und' audio, or a language not in keep_languages),
+        # fall back to keeping every original track rather than emitting a
+        # video-only file. Dropping all audio is never an acceptable outcome.
+        if not kept and streams:
+            kept = list(streams)
+    else:
+        kept = list(streams)
+
+    # 2. Remove commentary (fall back to pre-filter list if all removed)
+    if config.remove_commentary:
+        before_commentary = list(kept)
+        kept = [s for s in kept if not COMMENTARY_PATTERN.search(s.title)]
+        if not kept and before_commentary:
+            kept = before_commentary
+
+    # 3. Sort by priority
+    priority_map = {lang: i for i, lang in enumerate(config.priority)}
+    kept.sort(
+        key=lambda s: (priority_map.get(s.language, 999), _variant_rank(s), s.index)
+    )
+
+    # 4. Build actions: for each language group, original then stereo copy
+    actions: list[AudioAction] = []
+    stereo_languages = set(config.add_stereo.languages)
+
+    stereo_present_by_language = {
+        language
+        for language in stereo_languages
+        if any(
+            s.language == language and s.channels <= config.add_stereo.channels
+            for s in kept
+        )
+    }
+
+    for stream in kept:
+        keep_original = stream.channels <= 2 or config.preserve_surround
+        if keep_original:
+            actions.append(AudioAction(stream=stream, action="copy"))
+
+        # Add stereo if surround and language matches, unless one is already present
+        if (
+            stream.channels > config.add_stereo.channels
+            and stream.language in stereo_languages
+            and stream.language not in stereo_present_by_language
+        ):
+            actions.append(
+                AudioAction(
+                    stream=stream,
+                    action="encode",
+                    codec=config.add_stereo.codec,
+                    channels=config.add_stereo.channels,
+                    bitrate=config.add_stereo.bitrate,
+                    source_index=stream.index,
+                )
+            )
+            stereo_present_by_language.add(stream.language)
+
+    return actions
