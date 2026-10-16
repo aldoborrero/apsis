@@ -5,8 +5,18 @@ from dataclasses import dataclass
 from typing import Literal
 
 from .config import AudioConfig
-from .constants import COMMENTARY_PATTERN
+from .constants import COMMENTARY_PATTERN, spanish_variant
 from .probe import StreamInfo
+
+# Within Spanish, Castilian first (the default for a Spain household), then an
+# untagged dub, then Latin American.
+_SPANISH_VARIANT_RANK = {"Spain": 0, None: 1, "Latin America": 2}
+
+
+def _variant_rank(stream: StreamInfo) -> int:
+    if stream.language != "spa":
+        return 0
+    return _SPANISH_VARIANT_RANK[spanish_variant(stream.title)]
 
 AudioActionType = Literal["copy", "encode"]
 
@@ -50,7 +60,9 @@ def build_audio_plan(
 
     # 3. Sort by priority
     priority_map = {lang: i for i, lang in enumerate(config.priority)}
-    kept.sort(key=lambda s: (priority_map.get(s.language, 999), s.index))
+    kept.sort(
+        key=lambda s: (priority_map.get(s.language, 999), _variant_rank(s), s.index)
+    )
 
     # 4. Build actions: for each language group, original then stereo copy
     actions: list[AudioAction] = []

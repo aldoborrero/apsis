@@ -6,6 +6,7 @@ from typing import Literal
 
 from .audio import AudioAction, build_audio_plan
 from .config import ProfileConfig
+from .constants import spanish_variant
 from .probe import ProbeResult, StreamInfo, probe_file
 from .subtitles import filter_subtitles
 
@@ -138,7 +139,9 @@ def select_default_subtitle_pos(
     return 0
 
 
-def _track_title(language: str, codec: str, channels: int) -> str:
+def _track_title(
+    language: str, codec: str, channels: int, source_title: str = ""
+) -> str:
     # An untagged track probes as "und" from mp4 but as "" once remuxed to mkv
     # (Matroska omits the default "und"). Title both like the mkv side, or the
     # title written from the mp4 never matches again and the file is re-queued.
@@ -147,6 +150,12 @@ def _track_title(language: str, codec: str, channels: int) -> str:
         lang = "Unknown"
     else:
         lang = LANGUAGE_NAMES.get(language, language.upper())
+    # Keep a Spanish track's variant: Castilian and Latin American dubs are both
+    # "spa", and an identical "Spanish / AAC / Stereo" title hides which is which.
+    if language == "spa":
+        variant = spanish_variant(source_title)
+        if variant:
+            lang = f"{lang} ({variant})"
     ch = CHANNEL_NAMES.get(channels, f"{channels}ch")
     return f"{lang} / {codec.upper()} / {ch}"
 
@@ -253,7 +262,10 @@ def plan_from_probe(
             action.stream.channels if action.action == "copy" else action.channels
         )
         expected_title = _track_title(
-            action.stream.language, expected_codec, expected_channels
+            action.stream.language,
+            expected_codec,
+            expected_channels,
+            source_title=action.stream.title,
         )
         current = audio_by_index.get(action.stream.index)
         default = i == default_audio_pos

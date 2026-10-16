@@ -128,3 +128,68 @@ def test_untagged_audio_is_compliant_after_its_own_remux(cfg):
     plan = plan_from_probe("/media/in.mkv", probe, cfg.profiles["tv"])
 
     assert plan.should_skip, [r.message for r in plan.reasons]
+
+
+def _disney_dual_spanish(latin_title="Latin American", spain_title="European"):
+    # Disney+ rips tag both Spanish dubs "spa" and tell them apart by title only.
+    return _probe(
+        _stream(0, "video", "hevc"),
+        _stream(1, "audio", "eac3", "eng", channels=6, default=1),
+        _stream(2, "audio", "aac", "spa", latin_title, channels=2),
+        _stream(3, "audio", "aac", "spa", spain_title, channels=2),
+        _stream(4, "audio", "aac", "ger", channels=2),
+    )
+
+
+def test_spanish_variants_keep_distinct_titles_castilian_first(cfg):
+    plan = plan_from_probe("/media/in.mkv", _disney_dual_spanish(), cfg.profiles["tv"])
+
+    assert [a.title_after for a in plan.audio] == [
+        "English / EAC3 / 5.1",
+        "English / AAC / Stereo",
+        "Spanish (Spain) / AAC / Stereo",
+        "Spanish (Latin America) / AAC / Stereo",
+    ]
+
+
+def test_castilian_is_default_when_spanish_leads(cfg):
+    profile = cfg.profiles["tv"].model_copy(deep=True)
+    profile.audio.default_language = "spa"
+    profile.audio.priority = ["spa", "eng"]
+    plan = plan_from_probe("/media/in.mkv", _disney_dual_spanish(), profile)
+
+    assert plan.audio[0].title_after == "Spanish (Spain) / AAC / Stereo"
+    assert [a.default for a in plan.audio] == [True, False, False, False]
+
+
+def test_spanish_variant_titles_are_stable_after_remux(cfg):
+    first = plan_from_probe("/media/in.mkv", _disney_dual_spanish(), cfg.profiles["tv"])
+    # The remuxed file: tracks in planned order, carrying the titles just written.
+    streams = [_stream(0, "video", "hevc")]
+    for i, a in enumerate(first.audio, start=1):
+        streams.append(
+            _stream(i, "audio", a.target_codec, a.language, a.title_after,
+                    channels=a.target_channels, default=int(a.default))
+        )
+    again = plan_from_probe("/media/in.mkv", _probe(*streams), cfg.profiles["tv"])
+
+    assert again.should_skip, [r.message for r in again.reasons]
+
+
+@pytest.mark.parametrize(
+    "title,expected",
+    [
+        ("European", "Spain"),
+        ("Castellano", "Spain"),
+        ("Español (España)", "Spain"),
+        ("Latin American", "Latin America"),
+        ("Latino", "Latin America"),
+        ("es-419", "Latin America"),
+        ("", None),
+        ("Spanish", None),
+    ],
+)
+def test_spanish_variant_detection(title, expected):
+    from _engine.constants import spanish_variant
+
+    assert spanish_variant(title) == expected
